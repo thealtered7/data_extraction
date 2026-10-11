@@ -1,0 +1,17 @@
+spring:
+  application:
+    name: data-extraction
+  main:
+    web-application-type: none
+  shell:
+    interactive:
+      enabled: true
+
+dataextraction:
+  helloer: simple
+
+logging:
+  level:
+    root: WARN
+    org.springframework: WARN
+    com.dataextraction: INFO
