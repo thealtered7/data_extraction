@@ -15,3 +15,22 @@ logging:
     root: WARN
     org.springframework: WARN
     com.dataextraction: INFO
+
+
+
+connector:
+  class: io.debezium.connector.postgresql.PostgresConnector
+plugin:
+  name: pgoutput
+
+database:
+  hostname: postgres
+  port: 5432
+  user: extract_pipeline_user
+  password: extract_pipeline_user
+  dbname: geo
+
+slot:
+  name: extract_slot
+publication:
+  name: extract_publication

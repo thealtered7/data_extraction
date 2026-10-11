@@ -15,6 +15,9 @@ FROM eclipse-temurin:21-jre-jammy
 WORKDIR /app
 
 COPY --from=build /build/app.jar /app/app.jar
+COPY config/application.properties /config/application.properties
+
+ENV SPRING_CONFIG_ADDITIONAL_LOCATION=file:/config/application.properties
 
 VOLUME ["/app/output"]
 
