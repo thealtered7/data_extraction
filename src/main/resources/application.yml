@@ -34,3 +34,15 @@ slot:
   name: extract_slot
 publication:
   name: extract_publication
+
+
+datapipelines:
+  base_url: http://localhost:8080
+  jwt_enabled: false
+  request_timeout_seconds: 10
+  jwt:
+    enabled: false
+    ttl_seconds: 300
+
+catalog:
+  name: lakehouse
