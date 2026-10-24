@@ -19,6 +19,9 @@ tasks.withType<JavaCompile>().configureEach {
 
 repositories {
     mavenCentral()
+    maven {
+        url = uri("https://packages.confluent.io/maven/")
+    }
 }
 
 dependencyManagement {
@@ -38,6 +41,11 @@ dependencies {
     implementation("org.postgresql:postgresql")
     implementation("com.fasterxml.jackson.core:jackson-databind")
     implementation("com.fasterxml.jackson.datatype:jackson-datatype-jsr310")
+    implementation("org.apache.kafka:kafka-clients")
+    implementation("io.confluent:kafka-json-schema-serializer:7.9.10") {
+        exclude(group = "org.apache.kafka", module = "kafka-clients")
+    }
+    implementation("software.amazon.glue:schema-registry-serde:2.0.1")
 
     testImplementation("org.springframework.boot:spring-boot-starter-test")
 }

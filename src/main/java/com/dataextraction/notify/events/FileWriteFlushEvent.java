@@ -4,15 +4,18 @@ import java.nio.file.Path;
 import java.time.Instant;
 
 public record FileWriteFlushEvent(
+        String writeType,
         Path filePath,
         Instant writtenAt,
         Instant extractStartAt,
+        Instant extractEndAt,
         long fileSize,
         long rowCount,
         String instanceName,
         String databaseName,
         String schemaName,
         String tableName,
+        String extractJobId,
         String bufferId,
         String extractType,
         Path warehousePath,

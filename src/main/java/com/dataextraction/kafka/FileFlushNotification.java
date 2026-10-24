@@ -1,7 +1,9 @@
-package com.thealtered7.models;
+package com.dataextraction.kafka;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import java.time.Instant;
+
+import com.dataextraction.notify.events.FileWriteFlushEvent;
 
 /**
  * Kafka flush notification for downstream consumers (e.g. bronze writers).
@@ -28,4 +30,30 @@ public record FileFlushNotification(
         @JsonProperty("key_schema_id") String keySchemaId,
         @JsonProperty("value_schema_id") String valueSchemaId,
         @JsonProperty("source_min_lsn") Long sourceMinLsn,
-        @JsonProperty("source_max_lsn") Long sourceMaxLsn) {}
+        @JsonProperty("source_max_lsn") Long sourceMaxLsn) {
+        
+        public static FileFlushNotification fromEvent(FileWriteFlushEvent event) {
+                return new FileFlushNotification(
+                event.writeType(),
+                event.filePath().toString(),
+                event.tableName(),
+                event.extractJobId(),
+                event.bufferId(),
+                event.extractType(),
+                event.extractStartAt(),
+                event.extractEndAt(),
+                event.rowCount(),
+                event.fileSize(),
+                event.instanceName(),
+                event.databaseName(),
+                event.schemaName(),
+                event.tableName(),
+                event.warehousePath().toString(),
+                event.keySchema(),
+                event.valueSchema(),
+                event.keySchemaId(),
+                event.valueSchemaId(),
+                event.sourceMinLsn(),
+                event.sourceMaxLsn());
+        }
+}
