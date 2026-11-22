@@ -119,4 +119,39 @@ public class PostgresMetaDataDB {
         }
         return "UNKNOWN";
     }
+
+    public void logReplicationSlotStatus(String slotName) throws SQLException {
+        Connection connection = connectionFactory.getConnection();
+        try {
+            PreparedStatement preparedStatement = connection.prepareStatement(
+                    """
+                    SELECT slot_name,
+                           confirmed_flush_lsn,
+                           restart_lsn,
+                           pg_current_wal_lsn() AS current_lsn,
+                           pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn) AS lag_bytes
+                    FROM pg_replication_slots
+                    WHERE slot_name = ?
+                    """);
+            preparedStatement.setString(1, slotName);
+            ResultSet resultSet = preparedStatement.executeQuery();
+            try {
+                if (!resultSet.next()) {
+                    log.warn("Replication slot not found: {}", slotName);
+                    return;
+                }
+                log.info(
+                        "Replication slot {}: confirmed_flush_lsn={}, restart_lsn={}, current_lsn={}, lag_bytes={}",
+                        resultSet.getString("slot_name"),
+                        resultSet.getString("confirmed_flush_lsn"),
+                        resultSet.getString("restart_lsn"),
+                        resultSet.getString("current_lsn"),
+                        resultSet.getString("lag_bytes"));
+            } finally {
+                resultSet.close();
+            }
+        } finally {
+            connection.close();
+        }
+    }
 }

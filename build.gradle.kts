@@ -45,7 +45,14 @@ dependencies {
     implementation("io.confluent:kafka-json-schema-serializer:7.9.10") {
         exclude(group = "org.apache.kafka", module = "kafka-clients")
     }
-    implementation("software.amazon.glue:schema-registry-serde:2.0.1")
+    implementation("software.amazon.glue:schema-registry-serde:2.0.1") {
+        // Confluent JSON Schema needs io.yokota's JsonSchemaConfig.builder().
+        // Glue also pulls the older Scala artifact, which occupies the same package and wins at runtime.
+        exclude(group = "com.kjetland", module = "mbknor-jackson-jsonschema_2.13")
+    }
+    implementation("io.debezium:debezium-api:3.5.0.Final")
+    implementation("io.debezium:debezium-embedded:3.5.0.Final")
+    implementation("io.debezium:debezium-connector-postgres:3.5.0.Final")
 
     testImplementation("org.springframework.boot:spring-boot-starter-test")
 }

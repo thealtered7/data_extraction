@@ -1,4 +1,4 @@
-package com.thealtered7;
+package com.dataextraction.sink;
 
 import java.util.Locale;
 import java.util.Objects;

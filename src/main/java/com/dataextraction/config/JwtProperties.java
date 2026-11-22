@@ -31,12 +31,16 @@ public class JwtProperties {
         return Duration.ofSeconds(ttlSeconds);
     }
 
-    public JwtTokenProvider buildJwtTokenProvider() {
+    private String validateAndGetSecret() {
         String secret = System.getenv(JWT_SECRET_ENV_VAR);
-        if (secret == null || secret.isBlank()) {
+        if (isEnabled() && (secret == null || secret.isBlank())) {
             throw new IllegalStateException(
-                    "app.datapipelines.http.jwt.enabled=true but " + JWT_SECRET_ENV_VAR + " is not set");
+                    "datapipelines.jwt.enabled=true but " + JWT_SECRET_ENV_VAR + " is not set");
         }
+        return secret;
+    }
+    public JwtTokenProvider buildJwtTokenProvider() {
+        String secret = validateAndGetSecret();
         Duration ttl = getJwtTokenTtl();
         return new JwtTokenProvider(secret, Observability.SERVICE_NAME, ttl, isEnabled());
     }

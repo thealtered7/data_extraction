@@ -1,4 +1,4 @@
-package com.dataextraction.schemaregistry;
+package com.dataextraction.schemaregistry.confluent;
 
 import io.confluent.kafka.serializers.json.KafkaJsonSchemaDeserializer;
 import io.confluent.kafka.serializers.json.KafkaJsonSchemaDeserializerConfig;
@@ -10,16 +10,19 @@ import java.util.Objects;
 import org.apache.kafka.common.serialization.Deserializer;
 import org.apache.kafka.common.serialization.Serializer;
 
+import com.dataextraction.schemaregistry.SchemaRegistryBackend;
+import com.dataextraction.schemaregistry.SchemaRegistrySerdeProvider;
+
 /**
  * Confluent Schema Registry (HTTP) using JSON Schema wire format.
  */
-final class ConfluentSchemaRegistrySerdeProvider implements SchemaRegistrySerdeProvider {
+public final class ConfluentSchemaRegistrySerdeProvider implements SchemaRegistrySerdeProvider {
 
     private String url;
     private boolean autoRegisterSchemas;
     private String compatibilityLevel;
 
-    ConfluentSchemaRegistrySerdeProvider(String url, boolean autoRegisterSchemas, String compatibilityLevel) {
+    public ConfluentSchemaRegistrySerdeProvider(String url, boolean autoRegisterSchemas, String compatibilityLevel) {
         this.url = Objects.requireNonNull(url, "url");
         this.autoRegisterSchemas = autoRegisterSchemas;
         this.compatibilityLevel = Objects.requireNonNull(compatibilityLevel, "compatibilityLevel");

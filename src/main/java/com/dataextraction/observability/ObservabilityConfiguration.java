@@ -8,7 +8,7 @@ public class ObservabilityConfiguration {
 
     @Bean(destroyMethod = "close")
     ObservabilityFactory observabilityFactory() {
-        return ObservabilityFactory.create();
+        return ObservabilityFactory.getInstance();
     }
 
     @Bean

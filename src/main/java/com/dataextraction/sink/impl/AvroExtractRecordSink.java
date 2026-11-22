@@ -1,5 +1,6 @@
 package com.dataextraction.sink.impl;
 
+import com.dataextraction.observability.Observability;
 import com.dataextraction.sink.ExtractRecordSink;
 import com.dataextraction.sink.ExtractOutputFormat;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -8,6 +9,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.util.Map;
 import org.apache.avro.Schema;
 import org.apache.avro.file.CodecFactory;
 import org.apache.avro.file.DataFileWriter;
@@ -22,6 +24,7 @@ public final class AvroExtractRecordSink implements ExtractRecordSink {
     private Schema topLevelSchema;
     private long bytesAtLastWrite;
     private ConnectAvroSchemas connectAvroSchemas;
+    private final SinkTelemetry telemetry = new SinkTelemetry();
     
     public AvroExtractRecordSink(ConnectAvroSchemas connectAvroSchemas) {
         this.connectAvroSchemas = connectAvroSchemas;
@@ -37,7 +40,16 @@ public final class AvroExtractRecordSink implements ExtractRecordSink {
     }
 
     @Override
+    public void bindTelemetry(Observability observability, Map<String, String> sourceTags) {
+        telemetry.bind(observability, sourceTags);
+    }
+
+    @Override
     public int write(JsonNode enrichedRoot, String connectValueSchemaJson) throws IOException {
+        return telemetry.observe("avro_write", () -> append(enrichedRoot, connectValueSchemaJson));
+    }
+
+    private int append(JsonNode enrichedRoot, String connectValueSchemaJson) throws IOException {
         if (tempFile == null) {
             throw new IOException("Avro sink is not open");
         }
@@ -83,6 +95,13 @@ public final class AvroExtractRecordSink implements ExtractRecordSink {
 
     @Override
     public void flush() throws IOException {
+        telemetry.observe("avro_flush", () -> {
+            flushWriter();
+            return "success";
+        });
+    }
+
+    private void flushWriter() throws IOException {
         if (dataFileWriter != null) {
             dataFileWriter.flush();
         }
@@ -93,6 +112,13 @@ public final class AvroExtractRecordSink implements ExtractRecordSink {
 
     @Override
     public void close() throws IOException {
+        telemetry.observe("avro_close", () -> {
+            closeWriter();
+            return "success";
+        });
+    }
+
+    private void closeWriter() throws IOException {
         try {
             if (dataFileWriter != null) {
                 dataFileWriter.close();
@@ -108,16 +134,16 @@ public final class AvroExtractRecordSink implements ExtractRecordSink {
         }
     }
 
-    @Override
-    public ExtractOutputFormat format() {
-        return ExtractOutputFormat.AVRO;
-    }
-
     private void closeQuietly() {
         try {
-            close();
+            closeWriter();
         } catch (IOException ignored) {
             // reset for reopen
         }
     }    
+
+    @Override
+    public ExtractOutputFormat getOutputFormat() {
+        return ExtractOutputFormat.AVRO;
+    }
 }

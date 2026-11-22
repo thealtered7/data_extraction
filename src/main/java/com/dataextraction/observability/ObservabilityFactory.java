@@ -14,7 +14,6 @@ import io.micrometer.core.instrument.binder.jvm.JvmGcMetrics;
 import io.micrometer.core.instrument.binder.jvm.JvmMemoryMetrics;
 import io.micrometer.core.instrument.binder.jvm.JvmThreadMetrics;
 import io.micrometer.core.instrument.binder.system.ProcessorMetrics;
-import io.micrometer.core.instrument.observation.DefaultMeterObservationHandler;
 import io.micrometer.observation.ObservationRegistry;
 import io.micrometer.registry.otlp.OtlpConfig;
 import io.micrometer.registry.otlp.OtlpMeterRegistry;
@@ -75,7 +74,7 @@ public final class ObservabilityFactory implements AutoCloseable {
         return instance;
     }
 
-    public static ObservabilityFactory create() {
+    private static ObservabilityFactory create() {
         String tracingEndpoint = envOrDefault(ENV_TRACING_ENDPOINT, DEFAULT_TRACING_ENDPOINT);
         String metricsExportUrl = envOrDefault(ENV_METRICS_EXPORT_URL, DEFAULT_METRICS_EXPORT_URL);
         log.info("OpenTelemetry tracing endpoint: {}", tracingEndpoint);
@@ -110,7 +109,6 @@ public final class ObservabilityFactory implements AutoCloseable {
 
         ObservationRegistry observationRegistry = ObservationRegistry.create();
         observationRegistry.observationConfig()
-                .observationHandler(new DefaultMeterObservationHandler(meterRegistry))
                 .observationHandler(new DefaultTracingObservationHandler(tracer));
 
         Observability observability = new Observability(observationRegistry, meterRegistry);

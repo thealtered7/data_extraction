@@ -1,11 +1,16 @@
 package com.dataextraction.observability;
 
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationRegistry;
@@ -24,6 +29,11 @@ public class Observability {
     public static final String FLUSH_NOTIFICATION_COUNTER = SERVICE_NAME + ".flush_notification";
     public static final String CDC_EVENT_WRITTEN_TO_BUFFER_COUNTER = SERVICE_NAME + ".cdc_event_written_to_buffer";
     public static final String CDC_FILES_WRITTEN_TO_COUNTER = SERVICE_NAME + ".cdc_file_written";
+
+    public static final String SOURCE_INSTANCE_NAME = "source_instance_name";
+    public static final String SOURCE_DATABASE_NAME = "source_database_name";
+    public static final String SOURCE_SCHEMA_NAME = "source_schema_name";
+    public static final String SOURCE_TABLE_NAME = "source_table_name";
 
     private final ObservationRegistry observationRegistry;
     private final MeterRegistry meterRegistry;
@@ -53,6 +63,33 @@ public class Observability {
         return new Observability(ObservationRegistry.create(), new SimpleMeterRegistry());
     }
 
+    /**
+     * Labels for counters and timing histograms. Blank values become {@code unknown}
+     * so a meter is never registered with a null tag.
+     */
+    public static Map<String, String> sourceTags(
+            String instanceName, String databaseName, String schemaName, String tableName) {
+        return Map.of(
+                SOURCE_INSTANCE_NAME, label(instanceName),
+                SOURCE_DATABASE_NAME, label(databaseName),
+                SOURCE_SCHEMA_NAME, label(schemaName),
+                SOURCE_TABLE_NAME, label(tableName));
+    }
+
+    public static String label(String value) {
+        if (value == null || value.isBlank()) {
+            return "unknown";
+        }
+        return value;
+    }
+
+    public void tagSource(String instanceName, String databaseName, String schemaName, String tableName) {
+        lowCardinalityTag(SOURCE_INSTANCE_NAME, label(instanceName));
+        lowCardinalityTag(SOURCE_DATABASE_NAME, label(databaseName));
+        lowCardinalityTag(SOURCE_SCHEMA_NAME, label(schemaName));
+        lowCardinalityTag(SOURCE_TABLE_NAME, label(tableName));
+    }
+
     public String observeOperation(String prefix, String operation, Map<String, String> tags, Supplier<String> action) {
         return observeOperation(prefix, operation, tags, action, null);
     }
@@ -68,6 +105,7 @@ public class Observability {
         if (tags != null) {
             tags.forEach(observation::lowCardinalityKeyValue);
         }
+        long startedAtNanos = System.nanoTime();
         observation.start();
         try (Observation.Scope scope = observation.openScope()) {
             outcome = action.get();
@@ -81,8 +119,7 @@ public class Observability {
             }
             throw ex;
         } finally {
-            observation.lowCardinalityKeyValue("outcome", outcome);
-            meterRegistry.counter(metricName(prefix, operation), "outcome", outcome).increment();
+            recordOutcome(prefix, operation, observation, tags, outcome, startedAtNanos);
             observation.stop();
         }
     }
@@ -111,6 +148,7 @@ public class Observability {
         if (tags != null) {
             tags.forEach(observation::lowCardinalityKeyValue);
         }
+        long startedAtNanos = System.nanoTime();
         observation.start();
         try (Observation.Scope scope = observation.openScope()) {
             T result = action.get();
@@ -120,8 +158,7 @@ public class Observability {
             observation.error(ex);
             throw ex;
         } finally {
-            observation.lowCardinalityKeyValue("outcome", outcome);
-            meterRegistry.counter(metricName(prefix, operation), "outcome", outcome).increment();
+            recordOutcome(prefix, operation, observation, tags, outcome, startedAtNanos);
             observation.stop();
         }
     }
@@ -178,5 +215,47 @@ public class Observability {
 
     public void incrementCounter(String metricName, String tagKey, String tagValue, int inc) {
         meterRegistry.counter(metricName, tagKey, tagValue).increment(inc);
+    }
+
+    /**
+     * Counter and timing histogram share the span's low-cardinality tags, including source
+     * labels added before this call returns and the outcome tag.
+     */
+    private void recordOutcome(
+            String prefix,
+            String operation,
+            Observation observation,
+            Map<String, String> tags,
+            String outcome,
+            long startedAtNanos) {
+        observation.lowCardinalityKeyValue("outcome", label(outcome));
+        String[] meterTags = meterTags(observation, tags, outcome);
+        meterRegistry.counter(metricName(prefix, operation), meterTags).increment();
+        Timer.builder(spanName(prefix, operation))
+                .tags(meterTags)
+                .publishPercentileHistogram()
+                .register(meterRegistry)
+                .record(System.nanoTime() - startedAtNanos, TimeUnit.NANOSECONDS);
+    }
+
+    /**
+     * A registry with no handlers treats observations as no-ops, so tags set on the span
+     * are not stored. Merge the caller's tags with whatever the span retained, including
+     * source labels added during the operation.
+     */
+    private static String[] meterTags(Observation observation, Map<String, String> tags, String outcome) {
+        Map<String, String> merged = new LinkedHashMap<>();
+        if (tags != null) {
+            tags.forEach((key, value) -> merged.put(key, label(value)));
+        }
+        observation.getContext().getLowCardinalityKeyValues().forEach(keyValue ->
+                merged.put(keyValue.getKey(), label(keyValue.getValue())));
+        merged.put("outcome", label(outcome));
+        List<String> pairs = new ArrayList<>(merged.size() * 2);
+        merged.forEach((key, value) -> {
+            pairs.add(key);
+            pairs.add(value);
+        });
+        return pairs.toArray(String[]::new);
     }
 }

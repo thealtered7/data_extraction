@@ -9,21 +9,21 @@ import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 
+import com.dataextraction.config.KafkaProperties;
 import com.dataextraction.schemaregistry.SchemaRegistrySerdeProvider;
 
 /**
  * Factory helpers that attach schema-registry-aware value serdes while keeping string keys.
  */
 public final class SchemaAwareKafkaProducerFactory {
-    private SchemaRegistrySerdeProvider schemaRegistrySerdeProvider;
-    private KafkaConfig kafkaConfig;
+    private SchemaRegistrySerdeProvider schemaRegistrySerdeProvider;    
+    private KafkaProperties kafkaProperties;
 
-    public SchemaAwareKafkaProducerFactory(SchemaRegistrySerdeProvider schemaRegistrySerdeProvider, KafkaConfig kafkaConfig) {        
+    public SchemaAwareKafkaProducerFactory(SchemaRegistrySerdeProvider schemaRegistrySerdeProvider, KafkaProperties kafkaProperties) {        
         this.schemaRegistrySerdeProvider = Objects.requireNonNull(schemaRegistrySerdeProvider, "schemaRegistrySerdeProvider");
-        this.kafkaConfig = Objects.requireNonNull(kafkaConfig, "kafkaConfig");
+        this.kafkaProperties = Objects.requireNonNull(kafkaProperties, "kafkaProperties");
     }
 
-    
 
     public <T> KafkaProducer<String, T> createProducer(
             String bootstrapServers, Class<T> valueType) {
@@ -31,14 +31,15 @@ public final class SchemaAwareKafkaProducerFactory {
     }
 
     public  <T> KafkaProducer<String, T> createProducer(Class<T> valueType) {
-        Objects.requireNonNull(kafkaConfig, "kafkaConfig");
-        Objects.requireNonNull(kafkaConfig.getBootstrapServers(), "kafkaConfig.bootstrapServers");
+        Objects.requireNonNull(kafkaProperties, "kafkaProperties");
+        Objects.requireNonNull(kafkaProperties.getBootstrapServers(), "kafkaConfig.bootstrapServers");
         Objects.requireNonNull(valueType, "valueType");
+        AdvertisedHostResolverProvider.apply(kafkaProperties.getAdvertisedHostOverrides());
 
         Properties props = new Properties();
-        props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, kafkaConfig.getBootstrapServers());
+        props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, kafkaProperties.getBootstrapServers());
         props.put(ProducerConfig.ACKS_CONFIG, "all");
-        String clientId = kafkaConfig.getClientId();
+        String clientId = kafkaProperties.getClientId();
         if (clientId != null && !clientId.isBlank()) {
             props.put(ProducerConfig.CLIENT_ID_CONFIG, clientId);
         }
@@ -48,15 +49,16 @@ public final class SchemaAwareKafkaProducerFactory {
 
     public <T> KafkaConsumer<String, T> createConsumer(
             Class<T> valueType) {
-        Objects.requireNonNull(kafkaConfig, "kafkaConfig");
-        Objects.requireNonNull(kafkaConfig.getBootstrapServers(), "kafkaConfig.bootstrapServers");
-        Objects.requireNonNull(kafkaConfig.getGroupId(), "kafkaConfig.groupId");
+        Objects.requireNonNull(kafkaProperties, "kafkaProperties");
+        Objects.requireNonNull(kafkaProperties.getBootstrapServers(), "kafkaConfig.bootstrapServers");
+        Objects.requireNonNull(kafkaProperties.getGroupId(), "kafkaConfig.groupId");
         Objects.requireNonNull(valueType, "valueType");
-        
+        AdvertisedHostResolverProvider.apply(kafkaProperties.getAdvertisedHostOverrides());
+
         Properties props = new Properties();
-        props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, kafkaConfig.getBootstrapServers());
-        props.put(ConsumerConfig.GROUP_ID_CONFIG, kafkaConfig.getGroupId());
-        String clientId = kafkaConfig.getClientId();
+        props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, kafkaProperties.getBootstrapServers());
+        props.put(ConsumerConfig.GROUP_ID_CONFIG, kafkaProperties.getGroupId());
+        String clientId = kafkaProperties.getClientId();
         if (clientId != null && !clientId.isBlank()) {
             props.put(ConsumerConfig.CLIENT_ID_CONFIG, clientId);
         }

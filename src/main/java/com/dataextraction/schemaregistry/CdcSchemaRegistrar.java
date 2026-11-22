@@ -1,5 +1,7 @@
 package com.dataextraction.schemaregistry;
 
+import java.util.Map;
+
 /**
  * Registers Debezium Connect JSON schema documents with a schema registry and returns the
  * registry id as a string (Confluent uses integer ids; Glue may use ARNs later).
@@ -15,4 +17,12 @@ public interface CdcSchemaRegistrar {
      * @return registry id string, or null if skipped/unavailable
      */
     String register(String subject, String connectSchemaJson);
+
+    /**
+     * Same as {@link #register(String, String)} with source labels for the span, counter,
+     * and timing histogram. The default ignores the labels and delegates.
+     */
+    default String register(String subject, String connectSchemaJson, Map<String, String> sourceTags) {
+        return register(subject, connectSchemaJson);
+    }
 }

@@ -71,7 +71,11 @@ public final class DatapipelinesHttpClient {
             observability.observeCallableVoid(
                     Observability.FILE_WRITES_PREFIX,
                     "http_post",
-                    Map.of("table", event.tableName()),
+                    Observability.sourceTags(
+                            event.getSourceInstanceName(),
+                            event.getSourceDatabaseName(),
+                            event.getSourceSchemaName(),
+                            event.getSourceTableName()),
                     () -> {
                         sendTableWrite(jobId, event);
                         return "success";
@@ -93,7 +97,7 @@ public final class DatapipelinesHttpClient {
             return observability.observeCallable(
                     Observability.FILE_WRITES_PREFIX,
                     "extract_post",
-                    Map.of(),
+                    extractSourceTags(request),
                     () -> sendPostExtract(request));
         } catch (RuntimeException e) {
             throw e;
@@ -112,7 +116,7 @@ public final class DatapipelinesHttpClient {
             observability.observeCallableVoid(
                     Observability.FILE_WRITES_PREFIX,
                     "extract_put",
-                    Map.of(),
+                    extractSourceTags(request),
                     () -> {
                         sendPutExtract(id, request);
                         return "success";
@@ -131,39 +135,39 @@ public final class DatapipelinesHttpClient {
                 null,
                 null,
                 null,
-                event.instanceName(),
-                event.databaseName(),
-                event.schemaName(),
-                event.tableName(),
+                event.getSourceInstanceName(),
+                event.getSourceDatabaseName(),
+                event.getSourceSchemaName(),
+                event.getSourceTableName(),
                 null,
                 null,
                 null,
-                event.rowCount(),
+                event.getWriteRowCount(),
                 null,
-                event.filePath().toString(),
-                event.fileSize(),
+                event.getRawFilePath() == null ? null : event.getRawFilePath().toString(),
+                event.getRawFileSize(),
                 jobId,
-                event.bufferId(),
-                event.extractType(),
-                event.extractStartAt(),
-                event.writtenAt(),
+                event.getExtractBufferId(),
+                event.getExtractType(),
+                event.getExtractStartAt(),
+                event.getExtractEndAt(),
                 null,
                 null,
-                directoryPath(event.warehousePath()),
-                event.keySchema(),
-                event.valueSchema(),
-                event.keySchemaId(),
-                event.valueSchemaId(),
-                event.sourceMinLsn(),
-                event.sourceMaxLsn());
+                directoryPath(event.getWarehousePath()),
+                event.getKeySchema(),
+                event.getValueSchema(),
+                event.getKeySchemaId(),
+                event.getValueSchemaId(),
+                event.getSourceMinLsn(),
+                event.getSourceMaxLsn());
         HttpResponse<String> response = sendJson(tableWritesEndpoint, "POST", requestBody);
         int status = response.statusCode();
         if (status < 200 || status >= 300) {
             throw new RuntimeException(
-                    "Datapipelines returned status " + status + " for buffer " + event.bufferId()
+                    "Datapipelines returned status " + status + " for buffer " + event.getExtractBufferId()
                             + ": " + response.body());
         }
-        log.debug("Posted table write for buffer {} (status {})", event.bufferId(), status);
+        log.debug("Posted table write for buffer {} (status {})", event.getExtractBufferId(), status);
     }
 
     private long sendPostExtract(ExtractRequest request) throws Exception {
@@ -194,6 +198,11 @@ public final class DatapipelinesHttpClient {
         }
         log.info("Updated extract {} for job {} to status {} (http {})",
                 id, request.extractJobId(), request.extractStatus(), status);
+    }
+
+    private static Map<String, String> extractSourceTags(ExtractRequest request) {
+        return Observability.sourceTags(
+                request.sourceInstanceName(), request.databaseName(), null, null);
     }
 
     private HttpResponse<String> sendJson(URI endpoint, String method, Object requestBody) throws Exception {

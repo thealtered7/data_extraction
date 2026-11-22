@@ -1,5 +1,6 @@
 package com.dataextraction.schemaregistry.confluent;
 
+import com.dataextraction.observability.Observability;
 import com.dataextraction.schemaregistry.CdcSchemaRegistrar;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -7,6 +8,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.confluent.kafka.schemaregistry.client.CachedSchemaRegistryClient;
 import io.confluent.kafka.schemaregistry.client.SchemaRegistryClient;
 import io.confluent.kafka.schemaregistry.json.JsonSchema;
+import java.util.Map;
 import java.util.Objects;
 import java.util.function.BiFunction;
 import org.slf4j.Logger;
@@ -16,7 +18,7 @@ import org.slf4j.LoggerFactory;
  * Registers Connect schema documents with Confluent Schema Registry by wrapping them in a JSON
  * Schema object that carries the Connect document under {@code x-kafka-connect-schema}.
  */
-final class ConfluentCdcSchemaRegistrar implements CdcSchemaRegistrar {
+public final class ConfluentCdcSchemaRegistrar implements CdcSchemaRegistrar {
 
     private static final Logger log = LoggerFactory.getLogger(ConfluentCdcSchemaRegistrar.class);
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -24,10 +26,16 @@ final class ConfluentCdcSchemaRegistrar implements CdcSchemaRegistrar {
 
     private ConfluentConfig confluentConfig;
     private SchemaRegistryClient client;
+    private final Observability observability;
 
 
     public ConfluentCdcSchemaRegistrar(ConfluentConfig confluentConfig) {
+        this(confluentConfig, Observability.noop());
+    }
+
+    public ConfluentCdcSchemaRegistrar(ConfluentConfig confluentConfig, Observability observability) {
         this.confluentConfig = Objects.requireNonNull(confluentConfig, "confluentConfig");
+        this.observability = Objects.requireNonNull(observability, "observability");
         this.client = new CachedSchemaRegistryClient(confluentConfig.getUrl(), IDENTITY_MAP_CAPACITY);
     }
     
@@ -36,10 +44,16 @@ final class ConfluentCdcSchemaRegistrar implements CdcSchemaRegistrar {
     ConfluentCdcSchemaRegistrar(BiFunction<String, String, Integer> registration) {
         this.confluentConfig = null;
         this.client = null;
+        this.observability = Observability.noop();
     }
 
     @Override
     public String register(String subject, String connectSchemaJson) {
+        return register(subject, connectSchemaJson, Map.of());
+    }
+
+    @Override
+    public String register(String subject, String connectSchemaJson, Map<String, String> sourceTags) {
         if (connectSchemaJson == null || connectSchemaJson.isBlank()) {
             return null;
         }
@@ -47,10 +61,19 @@ final class ConfluentCdcSchemaRegistrar implements CdcSchemaRegistrar {
             log.warn("Skipping schema registration: subject is blank");
             return null;
         }
+        Map<String, String> tags = sourceTags == null ? Map.of() : sourceTags;
         try {
-            String wrapped = wrapConnectSchema(connectSchemaJson);
-            Integer id = this.client.register(subject, new JsonSchema(wrapped));
-            return id == null ? null : Integer.toString(id);
+            return observability.observeCallable(
+                    Observability.FILE_WRITES_PREFIX,
+                    "schema_register",
+                    tags,
+                    () -> registerSchema(subject, connectSchemaJson));
+        } catch (RuntimeException e) {
+            log.warn(
+                    "Failed to register Connect schema under subject {}; leaving schema id null",
+                    subject,
+                    e);
+            return null;
         } catch (Exception e) {
             log.warn(
                     "Failed to register Connect schema under subject {}; leaving schema id null",
@@ -58,6 +81,12 @@ final class ConfluentCdcSchemaRegistrar implements CdcSchemaRegistrar {
                     e);
             return null;
         }
+    }
+
+    private String registerSchema(String subject, String connectSchemaJson) throws Exception {
+        String wrapped = wrapConnectSchema(connectSchemaJson);
+        Integer id = this.client.register(subject, new JsonSchema(wrapped));
+        return id == null ? null : Integer.toString(id);
     }
 
     private String wrapConnectSchema(String connectSchemaJson) throws Exception {

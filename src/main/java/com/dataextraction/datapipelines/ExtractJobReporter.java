@@ -30,6 +30,7 @@ public final class ExtractJobReporter {
     private final String extractJobId;
     private final String extractType;
     private final String catalogName;
+    private final String namespaceName;
     private final String databaseName;
     private final String sourceInstanceName;
 
@@ -50,12 +51,14 @@ public final class ExtractJobReporter {
             String extractJobId,
             String extractType,
             String catalogName,
+            String namespaceName,
             String databaseName,
             String sourceInstanceName) {
         this.client = Objects.requireNonNull(client, "client");
         this.extractJobId = Objects.requireNonNull(extractJobId, "extractJobId");
         this.extractType = Objects.requireNonNull(extractType, "extractType");
         this.catalogName = catalogName;
+        this.namespaceName = namespaceName;
         this.databaseName = databaseName;
         this.sourceInstanceName = sourceInstanceName;
     }
@@ -68,13 +71,20 @@ public final class ExtractJobReporter {
             String extractJobId,
             String extractType,
             String catalogName,
+            String namespaceName,
             String databaseName,
             String sourceInstanceName) {
         if (client == null) {
             return null;
         }
         return new ExtractJobReporter(
-                client, extractJobId, extractType, catalogName, databaseName, sourceInstanceName);
+                client,
+                extractJobId,
+                extractType,
+                catalogName,
+                namespaceName,
+                databaseName,
+                sourceInstanceName);
     }
 
     /**
@@ -90,7 +100,7 @@ public final class ExtractJobReporter {
                 null,
                 STATUS_STARTING,
                 catalogName,
-                null,
+                namespaceName,
                 databaseName,
                 sourceInstanceName,
                 null,
@@ -113,17 +123,18 @@ public final class ExtractJobReporter {
         if (event == null) {
             return;
         }
-        rowCount.addAndGet(event.rowCount());
-        bytesCount.addAndGet(event.fileSize());
-        Long flushMinLsn = event.sourceMinLsn();
+        rowCount.addAndGet(event.getWriteRowCount() == null ? 0L : event.getWriteRowCount());
+        bytesCount.addAndGet(event.getRawFileSize() == null ? 0L : event.getRawFileSize());
+        Long flushMinLsn = event.getSourceMinLsn();
         if (flushMinLsn != null) {
             sourceMinLsn.updateAndGet(current -> current == null || flushMinLsn < current ? flushMinLsn : current);
         }
-        Long flushMaxLsn = event.sourceMaxLsn();
+        Long flushMaxLsn = event.getSourceMaxLsn();
         if (flushMaxLsn != null) {
             sourceMaxLsn.updateAndGet(current -> current == null || flushMaxLsn > current ? flushMaxLsn : current);
         }
-        String tableFqn = event.databaseName() + "." + event.schemaName() + "." + event.tableName();
+        String tableFqn = event.getSourceDatabaseName() + "." + event.getSourceSchemaName() + "."
+                + event.getSourceTableName();
         synchronized (tablesLock) {
             tables.add(tableFqn);
         }
@@ -168,7 +179,7 @@ public final class ExtractJobReporter {
                 endAt,
                 status,
                 catalogName,
-                null,
+                namespaceName,
                 databaseName,
                 sourceInstanceName,
                 sourceMinLsn.get(),

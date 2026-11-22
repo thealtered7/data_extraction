@@ -2,7 +2,13 @@ package com.dataextraction.config;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
+import com.dataextraction.observability.Observability;
+import com.dataextraction.schemaregistry.CdcSchemaRegistrar;
 import com.dataextraction.schemaregistry.SchemaRegistryBackend;
+import com.dataextraction.schemaregistry.SchemaRegistrySerdeProvider;
+import com.dataextraction.schemaregistry.confluent.ConfluentCdcSchemaRegistrar;
+import com.dataextraction.schemaregistry.confluent.ConfluentConfig;
+import com.dataextraction.schemaregistry.confluent.ConfluentSchemaRegistrySerdeProvider;
 
 @ConfigurationProperties(prefix = "schema-registry")
 public class SchemaRegistryProperties {
@@ -106,5 +112,31 @@ public class SchemaRegistryProperties {
 
     public SchemaRegistryBackend getSchemaRegistryBackend() {
         return SchemaRegistryBackend.fromName(getType()).orElse(SchemaRegistryBackend.NONE);
+    }
+
+    public CdcSchemaRegistrar createCdcSchemaRegistrar() {
+        return createCdcSchemaRegistrar(Observability.noop());
+    }
+
+    public CdcSchemaRegistrar createCdcSchemaRegistrar(Observability observability) {
+        switch (getSchemaRegistryBackend()) {
+            case CONFLUENT:
+                ConfluentConfig confluentConfig = new ConfluentConfig();
+                confluentConfig.setUrl(getConfluent().getUrl());
+                confluentConfig.setAutoRegisterSchemas(getConfluent().isAutoRegisterSchemas());
+                confluentConfig.setCompatibilityLevel(getConfluent().getCompatibilityLevel());
+                return new ConfluentCdcSchemaRegistrar(confluentConfig, observability);
+            default:
+                throw new IllegalArgumentException("Unsupported schema registry backend: " + getSchemaRegistryBackend());
+        }
+    }
+
+    public SchemaRegistrySerdeProvider createSchemaRegistrySerdeProvider() {
+        switch (getSchemaRegistryBackend()) {
+            case CONFLUENT:
+                return new ConfluentSchemaRegistrySerdeProvider(getConfluent().getUrl(), getConfluent().isAutoRegisterSchemas(), getConfluent().getCompatibilityLevel());
+            default:
+                throw new IllegalArgumentException("Unsupported schema registry backend: " + getSchemaRegistryBackend());
+        }
     }
 }

@@ -15,6 +15,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import com.dataextraction.notify.events.FileWriteFlushEvent;
+import com.dataextraction.observability.Observability;
 
 class LocalFileStoreFlushedBufferHandlerTest {
 
@@ -26,7 +27,7 @@ class LocalFileStoreFlushedBufferHandlerTest {
     @Test
     void writesStreamUnderUtcDatePath() throws IOException {
         LocalFileStoreFlushedBufferHandler handler =
-                new LocalFileStoreFlushedBufferHandler(tempDir, "dev", ".JSON");
+                new LocalFileStoreFlushedBufferHandler(tempDir, "dev", ".JSON", Observability.noop());
         byte[] payload = "row-1\nrow-2\n".getBytes();
         FileWriteFlushEvent event = event(EXTRACT_START);
 
@@ -50,7 +51,7 @@ class LocalFileStoreFlushedBufferHandlerTest {
     void usesUtcDateWhenLocalOffsetWouldBePreviousDay() throws IOException {
         Instant start = Instant.parse("2026-03-05T01:00:00Z");
         LocalFileStoreFlushedBufferHandler handler =
-                new LocalFileStoreFlushedBufferHandler(tempDir, "dev", "jsonl");
+                new LocalFileStoreFlushedBufferHandler(tempDir, "dev", "jsonl", Observability.noop());
 
         String writtenPath = handler.handleFlushedBuffer(event(start), new ByteArrayInputStream(new byte[0]), 0);
 
@@ -63,9 +64,9 @@ class LocalFileStoreFlushedBufferHandlerTest {
 
     @Test
     void normalizesFileExtension() {
-        assertEquals("json", new LocalFileStoreFlushedBufferHandler(tempDir, "dev", ".JSON").getFileExtension());
-        assertEquals("csv", new LocalFileStoreFlushedBufferHandler(tempDir, "dev", "  CSV  ").getFileExtension());
-        assertEquals("parquet", new LocalFileStoreFlushedBufferHandler(tempDir, "dev", "parquet").getFileExtension());
+        assertEquals("json", new LocalFileStoreFlushedBufferHandler(tempDir, "dev", ".JSON", Observability.noop()).getFileExtension());
+        assertEquals("csv", new LocalFileStoreFlushedBufferHandler(tempDir, "dev", "  CSV  ", Observability.noop()).getFileExtension());
+        assertEquals("parquet", new LocalFileStoreFlushedBufferHandler(tempDir, "dev", "parquet", Observability.noop()).getFileExtension());
     }
 
     @Test
@@ -73,7 +74,7 @@ class LocalFileStoreFlushedBufferHandlerTest {
         Path notADirectory = tempDir.resolve("not-a-directory");
         Files.writeString(notADirectory, "x");
         LocalFileStoreFlushedBufferHandler handler =
-                new LocalFileStoreFlushedBufferHandler(notADirectory, "dev", "json");
+                new LocalFileStoreFlushedBufferHandler(notADirectory, "dev", "json", Observability.noop());
 
         RuntimeException thrown = assertThrows(
                 RuntimeException.class,
@@ -87,18 +88,18 @@ class LocalFileStoreFlushedBufferHandlerTest {
         return new FileWriteFlushEvent(
                 "flush",
                 Path.of("buffer.bin"),
-                extractStartAt,
-                extractStartAt,
-                extractStartAt.plusSeconds(60),
-                10,
-                2,
-                "prod-db",
-                "geo",
-                "public",
                 "places",
                 "job-1",
                 "buf-9",
                 "snapshot",
+                extractStartAt,
+                extractStartAt.plusSeconds(60),
+                2L,
+                10L,
+                "prod-db",
+                "geo",
+                "public",
+                "places",
                 null,
                 null,
                 null,

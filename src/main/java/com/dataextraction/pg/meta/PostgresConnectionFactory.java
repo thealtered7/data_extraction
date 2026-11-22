@@ -10,10 +10,6 @@ public class PostgresConnectionFactory {
     private final String password;
     private final String instanceName;
 
-    public PostgresConnectionFactory(String connectionUrl, String instanceName) {
-        this(connectionUrl, null, null, instanceName);
-    }
-
     public PostgresConnectionFactory(String connectionUrl, String user, String password, String instanceName) {
         this.connectionUrl = connectionUrl;
         this.user = user;

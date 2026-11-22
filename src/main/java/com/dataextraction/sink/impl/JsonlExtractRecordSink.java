@@ -1,5 +1,6 @@
 package com.dataextraction.sink.impl;
 
+import com.dataextraction.observability.Observability;
 import com.dataextraction.sink.ExtractOutputFormat;
 import com.dataextraction.sink.ExtractRecordSink;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -11,6 +12,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.util.Map;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -23,6 +25,7 @@ public final class JsonlExtractRecordSink implements ExtractRecordSink {
 
     private Path tempFile;
     private OutputStream tempStream;
+    private final SinkTelemetry telemetry = new SinkTelemetry();
 
     @Override
     public void open(Path tempFile) throws IOException {
@@ -33,7 +36,16 @@ public final class JsonlExtractRecordSink implements ExtractRecordSink {
     }
 
     @Override
+    public void bindTelemetry(Observability observability, Map<String, String> sourceTags) {
+        telemetry.bind(observability, sourceTags);
+    }
+
+    @Override
     public int write(JsonNode enrichedRoot, String connectValueSchemaJson) throws IOException {
+        return telemetry.observe("jsonl_write", () -> append(enrichedRoot));
+    }
+
+    private int append(JsonNode enrichedRoot) throws IOException {
         ensureOpen();
         byte[] bytes = OBJECT_MAPPER.writeValueAsBytes(enrichedRoot);
         tempStream.write(bytes);
@@ -43,23 +55,28 @@ public final class JsonlExtractRecordSink implements ExtractRecordSink {
 
     @Override
     public void flush() throws IOException {
-        if (tempStream != null) {
-            tempStream.flush();
-        }
+        telemetry.observe("jsonl_flush", () -> {
+            if (tempStream != null) {
+                tempStream.flush();
+            }
+            return "success";
+        });
     }
 
     @Override
     public void close() throws IOException {
+        telemetry.observe("jsonl_close", () -> {
+            release();
+            return "success";
+        });
+    }
+
+    private void release() throws IOException {
         if (tempStream != null) {
             tempStream.close();
             tempStream = null;
         }
         tempFile = null;
-    }
-
-    @Override
-    public ExtractOutputFormat format() {
-        return ExtractOutputFormat.JSONL;
     }
 
     private void ensureOpen() throws IOException {
@@ -71,14 +88,18 @@ public final class JsonlExtractRecordSink implements ExtractRecordSink {
 
     private void closeQuietly() {
         try {
-            close();
+            release();
         } catch (IOException ignored) {
             logger.error("Error closing JSONL sink: {}", ignored);
-            // reset for reopen
         }
     }
 
     public Path getTempFile() {
         return this.tempFile;
+    }
+
+    @Override
+    public ExtractOutputFormat getOutputFormat() {
+        return ExtractOutputFormat.JSONL;
     }
 }

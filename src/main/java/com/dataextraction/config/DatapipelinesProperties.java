@@ -44,9 +44,12 @@ public class DatapipelinesProperties {
     }
 
     /**
-     * Returns a client when {@code app.datapipelines.http.base-url} is set; otherwise null.
+     * Returns a client when {@code datapipelines.base-url} is set; otherwise null.
      */
     public DatapipelinesHttpClient createDatePipelinesHttpClient(Observability observability) {
+        if (baseUrl == null || baseUrl.isBlank()) {
+            return null;
+        }
         Duration requestTimeout = Duration.ofSeconds(getRequestTimeoutSeconds());
         HttpClient httpClient = HttpClient.newBuilder()
                 .connectTimeout(requestTimeout)

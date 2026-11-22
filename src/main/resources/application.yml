@@ -9,6 +9,9 @@ spring:
 
 dataextraction:
   helloer: simple
+  max_buffer_size_bytes: 1073741824 # 1GB
+  output_format: jsonlines
+  extract_namespace: geo
 
 logging:
   level:
@@ -16,28 +19,25 @@ logging:
     org.springframework: WARN
     com.dataextraction: INFO
 
-
-
 connector:
   class: io.debezium.connector.postgresql.PostgresConnector
 plugin:
   name: pgoutput
 
-database:
+source_database:
   hostname: postgres
   port: 5432
   user: extract_pipeline_user
   password: extract_pipeline_user
   dbname: geo
-
-slot:
-  name: extract_slot
-publication:
-  name: extract_publication
+  slot_name: extract_slot
+  publication_name: extract_publication
+  instance_name: geo-database
+  offset_storage_file_filename: offset.json
 
 
 datapipelines:
-  base_url: http://localhost:8080
+  base_url: http://localhost:10001
   jwt_enabled: false
   request_timeout_seconds: 10
   jwt:
@@ -46,3 +46,21 @@ datapipelines:
 
 catalog:
   name: lakehouse
+
+kafka:
+  brokers:
+    - localhost:9092
+  # Broker metadata advertises hostname kafka. Host clients reach the published port via this rewrite.
+  advertised-host-overrides:
+    kafka: 127.0.0.1
+  client-id: data-extraction
+  acks: all
+  topics:
+    - extract.file-flushes
+
+schema-registry:
+  type: confluent
+  confluent:
+    url: http://localhost:8081
+    auto-register-schemas: true
+    compatibility-level: BACKWARD
