@@ -7,6 +7,7 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.Objects;
 
 import org.slf4j.Logger;
@@ -18,6 +19,12 @@ import com.dataextraction.observability.Observability;
 
 public class LocalFileStoreFlushedBufferHandler implements FlushedBufferHandler {
     private static final Logger logger = LoggerFactory.getLogger(LocalFileStoreFlushedBufferHandler.class);
+    /**
+     * Instant.toString() embeds {@code :} (e.g. {@code 23:37:07}), which breaks Hadoop/Spark path
+     * URIs when reading {@code .avro} (checksum sidecar {@code .file.avro.crc}).
+     */
+    private static final DateTimeFormatter FILE_TIMESTAMP =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH-mm-ss.SSSSSSSSS'Z'").withZone(ZoneOffset.UTC);
     private Path basePath;
     private String environment;
     private String fileExtension;
@@ -75,7 +82,8 @@ public class LocalFileStoreFlushedBufferHandler implements FlushedBufferHandler 
         int month = startTime.getMonthValue();
         int day = startTime.getDayOfMonth();
 
-        String fileName = String.format("%s_%s_%s.%s", extractJobId, bufferId, extractStartAt.toString(), getFileExtension());
+        String fileName = String.format(
+                "%s_%s_%s.%s", extractJobId, bufferId, FILE_TIMESTAMP.format(extractStartAt), getFileExtension());
         Path artifactSubPath = Path.of(
                 getEnvironment(),
                 event.getSourceInstanceName(),

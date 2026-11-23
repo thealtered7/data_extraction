@@ -20,11 +20,15 @@ import org.springframework.shell.standard.ShellMethod;
 
 import com.dataextraction.buffer.FlushedBufferHandler;
 import com.dataextraction.buffer.impl.LocalFileStoreFlushedBufferHandler;
+import com.dataextraction.cdc_consumer.impl.BufferedFileWriteConsumer;
 import com.dataextraction.cdc_consumer.process.EngineShutdownCoordinator;
+import com.dataextraction.cdc_consumer.process.WalIdleTimeoutWatcher;
 import com.dataextraction.cdc_consumer.format.ChangeFormatSupport;
 import com.dataextraction.cdc_consumer.format.SnapshotDependencies;
 import com.dataextraction.cdc_consumer.format.StartedSnapshot;
+import com.dataextraction.cdc_consumer.format.StreamingDependencies;
 import com.dataextraction.config.CatalogProperties;
+import com.dataextraction.config.CdcReplicationProperties;
 import com.dataextraction.config.DataExtractionProperties;
 import com.dataextraction.config.DatabaseProperties;
 import com.dataextraction.config.DebeziumProperties;
@@ -42,6 +46,7 @@ import com.dataextraction.notify.FileWrittenObserver;
 import com.dataextraction.observability.Observability;
 import com.dataextraction.observability.ObservabilityFactory;
 import com.dataextraction.pg.meta.PostgresConnectionFactory;
+import com.dataextraction.pg.meta.PostgresLsn;
 import com.dataextraction.pg.meta.PostgresMetaDataDB;
 import com.dataextraction.notify.events.FileWriteFlushEvent;
 import com.dataextraction.notify.impl.FileWriteObserverDataPipelines;
@@ -74,6 +79,8 @@ public class CdcConsumerCommands {
     private final SinkProperties sinkProperties;
     private final KafkaProperties kafkaProperties;
     private final DebeziumProperties debeziumProperties;
+    private final CdcReplicationProperties cdcReplicationProperties;
+    private final ReplicationConnectorConfig replicationConnectorConfig = new ReplicationConnectorConfig();
 
     public CdcConsumerCommands(
             CatalogProperties catalogProperties,
@@ -85,7 +92,8 @@ public class CdcConsumerCommands {
             SchemaRegistryProperties schemaRegistryProperties,
             SinkProperties sinkProperties,
             KafkaProperties kafkaProperties,
-            DebeziumProperties debeziumProperties) {
+            DebeziumProperties debeziumProperties,
+            CdcReplicationProperties cdcReplicationProperties) {
         this.catalogProperties = catalogProperties;
         this.datapipelinesProperties = datapipelinesProperties;
         this.databaseProperties = databaseProperties;
@@ -96,6 +104,7 @@ public class CdcConsumerCommands {
         this.sinkProperties = sinkProperties;
         this.kafkaProperties = kafkaProperties;
         this.debeziumProperties = debeziumProperties;
+        this.cdcReplicationProperties = cdcReplicationProperties;
     }
 
     public DatapipelinesProperties getDatapipelinesProperties() {
@@ -294,6 +303,149 @@ public class CdcConsumerCommands {
         }
         ObservabilityFactory.getInstance().close();
         return "SNAPSHOT COMPLETED";
+    }
+
+    @ShellMethod(key = "cdc-replicate", value = "Replicate CDC changes up to the current WAL position")
+    public String cdcReplicate() throws IOException, InterruptedException {
+        log.info("CDC replication");
+        String jobId = UUID.randomUUID().toString();
+        Observability observability = ObservabilityFactory.getInstance().observability();
+        CdcSchemaRegistrar cdcSchemaRegistrar = createCdcSchemaRegistrar(observability);
+        KafkaProducer<String, FileWriteFlushEvent> producer = createKafkaProducer(cdcSchemaRegistrar);
+        FileWrittenObserver fileWriteObserverKafka = createFileWriteObserverKafka(producer, observability);
+        FileWrittenObserver fileWriteObserverDataPipelines = createFileWriteObserverDataPipelines(observability);
+        ExtractJobReporter extractJobReporter = ExtractJobReporter.createOptional(
+                createDatapipelinesHttpClient(observability),
+                jobId,
+                "cdc",
+                catalogProperties.getName(),
+                dataExtractionProperties.getExtractNamespace(),
+                databaseProperties.getDbname(),
+                databaseProperties.getInstanceName());
+        if (extractJobReporter != null) {
+            Runtime.getRuntime().addShutdownHook(new Thread(
+                    extractJobReporter::finish, "extract-job-reporter-shutdown"));
+        }
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            producer.flush();
+            producer.close();
+        }, "kafka-producer-shutdown"));
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            fileWriteObserverDataPipelines.flush();
+        }, "file-write-observer-data-pipelines-shutdown"));
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            fileWriteObserverKafka.flush();
+        }, "file-write-observer-kafka-shutdown"));
+        Runtime.getRuntime().addShutdownHook(new Thread(ObservabilityFactory.getInstance()::shutdown, "observability-shutdown"));
+
+        PostgresConnectionFactory postgresConnectionFactory = getPostgresConnectionFactory();
+        PostgresMetaDataDB postgresMetaDataDB =
+                new PostgresMetaDataDB(postgresConnectionFactory, observability);
+        String slotName = this.databaseProperties.getSlotName();
+        if (slotName != null && !slotName.isBlank()) {
+            try {
+                postgresMetaDataDB.logReplicationSlotStatus(slotName);
+            } catch (SQLException e) {
+                log.error("Error logging replication slot status: {}", e.getMessage());
+                return "Error logging replication slot status: " + e.getMessage();
+            }
+        }
+        String offsetFile = databaseProperties.getCdcOffsetStorageFileFilename();
+        if (offsetFile != null && !offsetFile.isBlank()) {
+            log.info("Debezium replication offset file (kept across runs): {}", offsetFile);
+        }
+
+        int maxBufferSizeBytes = dataExtractionProperties.getMaxBufferSizeBytes();
+        String extractType = "cdc";
+        ExtractRecordSinkFactory sinkFactory = createSinkFactory();
+        FlushedBufferHandler flushedBufferHandler = createFlushedBufferHandler(observability);
+
+        StreamingDependencies.Builder streamingDependencies = StreamingDependencies.builder()
+                .withMaxBufferSize(maxBufferSizeBytes)
+                .withObservability(observability)
+                .addFileWrittenObserver(fileWriteObserverKafka)
+                .addFileWrittenObserver(fileWriteObserverDataPipelines);
+        if (extractJobReporter != null) {
+            streamingDependencies.addFileWrittenObserver(new FileWriteObserverExtractJob(extractJobReporter, observability));
+        }
+
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        CountDownLatch shutdownLatch = new CountDownLatch(1);
+        AtomicReference<EngineShutdownCoordinator> coordinatorRef = new AtomicReference<>();
+        AtomicReference<WalIdleTimeoutWatcher> idleTimeoutWatcherRef = new AtomicReference<>();
+
+        Properties connectorProps = replicationConnectorConfig.create(databaseProperties);
+        ChangeFormatSupport formatSupport = ChangeFormatSupport.from(debeziumProperties, schemaRegistryProperties);
+        BufferedFileWriteConsumer<?> consumer = formatSupport.streamingConsumer(streamingDependencies
+                .withRunGuid(jobId)
+                .withInstanceName(databaseProperties.getInstanceName())
+                .withExtractType(extractType)
+                .withSchemaRegistrar(cdcSchemaRegistrar)
+                .withFlushedBufferHandler(flushedBufferHandler)
+                .withSinkFactory(sinkFactory)
+                .build());
+        consumer.init();
+        DebeziumEngine.CompletionCallback completion = (success, message, error) -> {
+            if (!success && error != null && !(error instanceof StopEngineException)) {
+                log.warn("Replication engine stopped with error: {}", message, error);
+                if (extractJobReporter != null) {
+                    extractJobReporter.markFailed();
+                }
+            } else {
+                log.info("Replication engine stopped: {}", message);
+            }
+            WalIdleTimeoutWatcher watcher = idleTimeoutWatcherRef.get();
+            if (watcher != null) {
+                watcher.cancel();
+            }
+            EngineShutdownCoordinator coordinator = coordinatorRef.get();
+            if (coordinator != null) {
+                coordinator.shutdown();
+            }
+        };
+        DebeziumEngine<?> engine = formatSupport.openEngine(connectorProps, consumer, completion);
+        EngineShutdownCoordinator coordinator =
+                new EngineShutdownCoordinator(engine, consumer, executor, shutdownLatch);
+        coordinatorRef.set(coordinator);
+        coordinator.registerShutdownHook();
+        consumer.setEngineShutdownCoordinator(coordinator);
+
+        WalIdleTimeoutWatcher idleTimeoutWatcher = WalIdleTimeoutWatcher.createOptional(
+                Long.toString(cdcReplicationProperties.getWalIdleTimeoutSeconds()), coordinator);
+        if (idleTimeoutWatcher != null) {
+            idleTimeoutWatcherRef.set(idleTimeoutWatcher);
+            consumer.setWalIdleTimeoutWatcher(idleTimeoutWatcher);
+            idleTimeoutWatcher.start();
+        }
+
+        if (cdcReplicationProperties.isHighWaterMarkEnabled()) {
+            try {
+                PostgresLsn batchEndLsn = postgresMetaDataDB.getHighWaterMark().getHighWaterMark();
+                log.info("Batch end LSN captured before engine start: {}", batchEndLsn);
+                consumer.setHighWaterMark(batchEndLsn);
+            } catch (SQLException e) {
+                log.error("Error reading WAL high water mark: {}", e.getMessage());
+                WalIdleTimeoutWatcher watcher = idleTimeoutWatcherRef.get();
+                if (watcher != null) {
+                    watcher.cancel();
+                }
+                coordinator.shutdown();
+                return "Error reading WAL high water mark: " + e.getMessage();
+            }
+        } else {
+            log.info("High water mark stopping disabled; engine will run until WAL idle timeout or shutdown");
+        }
+
+        if (extractJobReporter != null) {
+            extractJobReporter.start();
+        }
+        executor.execute(engine);
+        coordinator.awaitShutdown();
+        if (extractJobReporter != null) {
+            extractJobReporter.finish();
+        }
+        ObservabilityFactory.getInstance().close();
+        return "CDC REPLICATION COMPLETED";
     }
 
     private DatapipelinesHttpClient createDatapipelinesHttpClient(Observability observability) {

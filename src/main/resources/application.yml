@@ -37,6 +37,11 @@ source_database:
   publication_name: extract_publication
   instance_name: geo-database
   offset_storage_file_filename: offset.json
+  cdc_offset_storage_file_filename: cdc-offsets.dat
+
+cdc:
+  high-water-mark-enabled: true
+  wal-idle-timeout-seconds: 10
 
 
 datapipelines:

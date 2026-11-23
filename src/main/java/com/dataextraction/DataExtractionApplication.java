@@ -1,6 +1,7 @@
 package com.dataextraction;
 
 import com.dataextraction.config.CatalogProperties;
+import com.dataextraction.config.CdcReplicationProperties;
 import com.dataextraction.config.DataExtractionProperties;
 import com.dataextraction.config.DatabaseProperties;
 import com.dataextraction.config.DebeziumProperties;
@@ -17,6 +18,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 @SpringBootApplication
 @EnableConfigurationProperties({
     CatalogProperties.class,
+    CdcReplicationProperties.class,
     DataExtractionProperties.class,
     DatabaseProperties.class,
     DebeziumProperties.class,

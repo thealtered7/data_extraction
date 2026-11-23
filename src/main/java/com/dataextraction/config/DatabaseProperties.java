@@ -13,6 +13,11 @@ public class DatabaseProperties {
     private String slotName = "extract_slot";
     private String publicationName = "extract_publication";
     private String offsetStorageFileFilename = "offset.json";
+    /**
+     * Offset file for {@code cdc-replicate}. Kept across runs. Snapshot deletes
+     * {@link #offsetStorageFileFilename} and must not share this path.
+     */
+    private String cdcOffsetStorageFileFilename = "cdc-offsets.dat";
     private String instanceName = "geo-database";
     /**
      * Debezium {@code table.include.list}: an anchored regular expression of
@@ -86,6 +91,14 @@ public class DatabaseProperties {
 
     public void setOffsetStorageFileFilename(String offsetStorageFileFilename) {
         this.offsetStorageFileFilename = offsetStorageFileFilename;
+    }
+
+    public String getCdcOffsetStorageFileFilename() {
+        return cdcOffsetStorageFileFilename;
+    }
+
+    public void setCdcOffsetStorageFileFilename(String cdcOffsetStorageFileFilename) {
+        this.cdcOffsetStorageFileFilename = cdcOffsetStorageFileFilename;
     }
 
     public String getInstanceName() {

@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -42,9 +43,10 @@ class LocalFileStoreFlushedBufferHandlerTest {
                 "2026",
                 "03",
                 "05",
-                "job-1_buf-9_" + EXTRACT_START + ".json"));
+                "job-1_buf-9_2026-03-05T14-30-00.000000000Z.json"));
         assertEquals(expected.toString(), writtenPath);
         assertArrayEquals(payload, Files.readAllBytes(expected));
+        assertTrue(!writtenPath.contains(":"), "Spark/Hadoop reject ':' in avro paths");
     }
 
     @Test
@@ -58,7 +60,7 @@ class LocalFileStoreFlushedBufferHandlerTest {
         assertEquals(
                 tempDir.resolve(Path.of(
                         "dev", "prod-db", "geo", "public", "places", "2026", "03", "05",
-                        "job-1_buf-9_" + start + ".jsonl")).toString(),
+                        "job-1_buf-9_2026-03-05T01-00-00.000000000Z.jsonl")).toString(),
                 writtenPath);
     }
 
