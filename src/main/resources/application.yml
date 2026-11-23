@@ -7,6 +7,9 @@ spring:
     interactive:
       enabled: true
 
+debezium:
+  format: avro
+
 dataextraction:
   helloer: simple
   max_buffer_size_bytes: 1073741824 # 1GB

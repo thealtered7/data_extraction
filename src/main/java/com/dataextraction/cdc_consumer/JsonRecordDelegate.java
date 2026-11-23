@@ -3,45 +3,74 @@ package com.dataextraction.cdc_consumer;
 import java.util.Map;
 import java.util.Objects;
 
-import org.slf4j.LoggerFactory;
 import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+import com.dataextraction.cdc_consumer.format.DecodedChange;
+import com.dataextraction.cdc_consumer.format.DeserializedRecord;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
-
-
-public class JsonRecordDelegate {
+public class JsonRecordDelegate implements RecordDelegate {
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     private static final Logger log = LoggerFactory.getLogger(JsonRecordDelegate.class);
 
+    private final String destination;
+    private final String key;
+    private final String value;
+    private final DeserializedRecord decoded;
     private Map<String, Object> record;
+    private boolean parsed;
 
     public JsonRecordDelegate(Map<String, Object> record) {
+        this.destination = null;
+        this.key = null;
+        this.value = null;
+        this.decoded = DecodedChange.passthrough(null, null);
         this.record = record;
+        this.parsed = true;
     }
 
     public JsonRecordDelegate(String json) throws JsonProcessingException {
-        if (json == null) {
-            this.record = null;
-            return;
-        }
-        this.record = OBJECT_MAPPER.readValue(json, new TypeReference<Map<String, Object>>() {});
+        this(null, null, json, DecodedChange.passthrough(null, json));
+        this.record = parse(json);
+        this.parsed = true;
+    }
+
+    private JsonRecordDelegate(String destination, String key, String value, DeserializedRecord decoded) {
+        this.destination = destination;
+        this.key = key;
+        this.value = value;
+        this.decoded = decoded;
+    }
+
+    public static JsonRecordDelegate from(String destination, DeserializedRecord decoded) {
+        String key = asString(decoded == null ? null : decoded.key());
+        String value = asString(decoded == null ? null : decoded.value());
+        DeserializedRecord stored = decoded == null ? DecodedChange.passthrough(key, value) : decoded;
+        return new JsonRecordDelegate(destination, key, value, stored);
+    }
+
+    @Override
+    public DeserializedRecord decoded() {
+        return decoded;
     }
 
     public Map<String, Object> getRecord() {
-        return record;
+        return record();
     }
 
+    @Override
     public String getTableName() {
-        if (record == null || record.isEmpty()) {
+        Map<String, Object> parsedRecord = record();
+        if (parsedRecord == null || parsedRecord.isEmpty()) {
             log.warn("ChangeEvent has no value; using unknown table FQN");
             return "unknown";
         }
         try {
             @SuppressWarnings("unchecked")
-            Map<String, Object> payload = (Map<String, Object>) record.get("payload");
+            Map<String, Object> payload = (Map<String, Object>) parsedRecord.get("payload");
             if (payload == null) {
                 log.warn("ChangeEvent missing payload; using unknown table FQN");
                 return "unknown";
@@ -66,11 +95,25 @@ public class JsonRecordDelegate {
         }
     }
 
+    @Override
     public Long getLsn() {
+        Map<String, Object> parsedRecord = record();
+        if (parsedRecord == null) {
+            log.warn("ChangeEvent missing lsn; using unknown LSN");
+            return null;
+        }
         @SuppressWarnings("unchecked")
-        Map<String, Object> payload = (Map<String, Object>) record.get("payload");
+        Map<String, Object> payload = (Map<String, Object>) parsedRecord.get("payload");
+        if (payload == null) {
+            log.warn("ChangeEvent missing lsn; using unknown LSN");
+            return null;
+        }
         @SuppressWarnings("unchecked")
         Map<String, Object> source = (Map<String, Object>) payload.get("source");
+        if (source == null) {
+            log.warn("ChangeEvent missing lsn; using unknown LSN");
+            return null;
+        }
         Object lsn = source.get("lsn");
         if (lsn == null) {
             log.warn("ChangeEvent missing lsn; using unknown LSN");
@@ -98,13 +141,28 @@ public class JsonRecordDelegate {
                 || "{\"schema\": null, \"payload\": null}".equals(trimmed);
     }
 
+    @Override
+    public boolean isHeartbeat() {
+        if (destination != null && destination.contains("__debezium-heartbeat")) {
+            return true;
+        }
+        return isHeartbeat(key, value);
+    }
+
+    @Override
+    public boolean isTombstone() {
+        return isTombstone(value);
+    }
+
+    @Override
     public boolean isCdcChangeEvent() {
-        if (record == null || record.isEmpty()) {
+        Map<String, Object> parsedRecord = record();
+        if (parsedRecord == null || parsedRecord.isEmpty()) {
             return false;
         }
         try {
             @SuppressWarnings("unchecked")
-            Map<String, Object> payload = (Map<String, Object>) record.get("payload");
+            Map<String, Object> payload = (Map<String, Object>) parsedRecord.get("payload");
             if (payload == null) {
                 return false;
             }
@@ -124,13 +182,15 @@ public class JsonRecordDelegate {
         }
     }
 
+    @Override
     public boolean isSnapshotReadEvent() {
-        if (record == null || record.isEmpty()) {
+        Map<String, Object> parsedRecord = record();
+        if (parsedRecord == null || parsedRecord.isEmpty()) {
             return false;
         }
         try {
             @SuppressWarnings("unchecked")
-            Map<String, Object> payload = (Map<String, Object>) record.get("payload");
+            Map<String, Object> payload = (Map<String, Object>) parsedRecord.get("payload");
             if (payload == null) {
                 return false;
             }
@@ -140,13 +200,15 @@ public class JsonRecordDelegate {
         }
     }
 
+    @Override
     public boolean isSnapshotLastEvent() {
-        if (record == null || record.isEmpty()) {
+        Map<String, Object> parsedRecord = record();
+        if (parsedRecord == null || parsedRecord.isEmpty()) {
             return false;
         }
         try {
             @SuppressWarnings("unchecked")
-            Map<String, Object> payload = (Map<String, Object>) record.get("payload");
+            Map<String, Object> payload = (Map<String, Object>) parsedRecord.get("payload");
             if (payload == null) {
                 return false;
             }
@@ -161,4 +223,29 @@ public class JsonRecordDelegate {
         }
     }
 
+    private Map<String, Object> record() {
+        if (!parsed) {
+            parsed = true;
+            try {
+                record = parse(value);
+            } catch (JsonProcessingException e) {
+                throw new IllegalArgumentException("Change event value is not JSON", e);
+            }
+        }
+        return record;
+    }
+
+    private static Map<String, Object> parse(String json) throws JsonProcessingException {
+        if (json == null) {
+            return null;
+        }
+        return OBJECT_MAPPER.readValue(json, new TypeReference<Map<String, Object>>() {});
+    }
+
+    private static String asString(Object value) {
+        if (value == null) {
+            return null;
+        }
+        return value instanceof String text ? text : value.toString();
+    }
 }

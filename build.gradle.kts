@@ -42,6 +42,12 @@ dependencies {
     implementation("com.fasterxml.jackson.core:jackson-databind")
     implementation("com.fasterxml.jackson.datatype:jackson-datatype-jsr310")
     implementation("org.apache.kafka:kafka-clients")
+    implementation("io.confluent:kafka-avro-serializer:7.9.10") {
+        exclude(group = "org.apache.kafka", module = "kafka-clients")
+    }
+    implementation("io.confluent:kafka-connect-avro-converter:7.9.10") {
+        exclude(group = "org.apache.kafka", module = "kafka-clients")
+    }
     implementation("io.confluent:kafka-json-schema-serializer:7.9.10") {
         exclude(group = "org.apache.kafka", module = "kafka-clients")
     }

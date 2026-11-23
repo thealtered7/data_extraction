@@ -6,6 +6,8 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.Map;
+import org.apache.avro.Schema;
+import org.apache.avro.generic.GenericRecord;
 
 /**
  * Format-specific writer for enriched extract records into a temp buffer file.
@@ -30,6 +32,20 @@ public interface ExtractRecordSink extends Closeable {
      * @param connectValueSchemaJson Connect schema JSON for the payload (may be null on early/simple records)
      */
     int write(JsonNode enrichedRoot, String connectValueSchemaJson) throws IOException;
+
+    /**
+     * Appends a Debezium Avro value wrapped with extract fields.
+     * The key schema is written once into the file user metadata.
+     */
+    default int writeAvro(
+            GenericRecord value,
+            Schema keySchema,
+            String extractJobId,
+            String extractBufferId,
+            String extractType,
+            String extractedAt) throws IOException {
+        throw new UnsupportedOperationException("Avro change records are not supported by " + getClass().getSimpleName());
+    }
 
     void flush() throws IOException;
 

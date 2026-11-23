@@ -1,6 +1,7 @@
 package com.dataextraction.sink.impl;
 
 import com.dataextraction.observability.Observability;
+import com.dataextraction.sink.AvroFileMetadata;
 import com.dataextraction.sink.ExtractRecordSink;
 import com.dataextraction.sink.ExtractOutputFormat;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -49,6 +50,54 @@ public final class AvroExtractRecordSink implements ExtractRecordSink {
         return telemetry.observe("avro_write", () -> append(enrichedRoot, connectValueSchemaJson));
     }
 
+    @Override
+    public int writeAvro(
+            GenericRecord value,
+            Schema keySchema,
+            String extractJobId,
+            String extractBufferId,
+            String extractType,
+            String extractedAt) throws IOException {
+        return telemetry.observe(
+                "avro_write",
+                () -> appendAvro(value, keySchema, extractJobId, extractBufferId, extractType, extractedAt));
+    }
+
+    private int appendAvro(
+            GenericRecord value,
+            Schema keySchema,
+            String extractJobId,
+            String extractBufferId,
+            String extractType,
+            String extractedAt) throws IOException {
+        if (tempFile == null) {
+            throw new IOException("Avro sink is not open");
+        }
+        if (value == null) {
+            throw new IOException("Avro value is required");
+        }
+        if (dataFileWriter == null) {
+            topLevelSchema = connectAvroSchemas.topLevelSchema(value.getSchema());
+            countingStream = new CountingOutputStream(new BufferedOutputStream(Files.newOutputStream(
+                    tempFile,
+                    StandardOpenOption.WRITE,
+                    StandardOpenOption.TRUNCATE_EXISTING,
+                    StandardOpenOption.CREATE)));
+            dataFileWriter = new DataFileWriter<>(new GenericDatumWriter<>(topLevelSchema));
+            dataFileWriter.setCodec(CodecFactory.snappyCodec());
+            if (keySchema != null) {
+                dataFileWriter.setMeta(AvroFileMetadata.KEY_SCHEMA, keySchema.toString());
+            }
+            dataFileWriter.create(topLevelSchema, countingStream);
+            bytesAtLastWrite = countingStream.bytesWritten();
+        }
+        GenericRecord record = connectAvroSchemas.wrapPayload(
+                topLevelSchema, extractJobId, extractBufferId, extractType, extractedAt, value);
+        dataFileWriter.append(record);
+        dataFileWriter.flush();
+        return byteDelta();
+    }
+
     private int append(JsonNode enrichedRoot, String connectValueSchemaJson) throws IOException {
         if (tempFile == null) {
             throw new IOException("Avro sink is not open");
@@ -87,6 +136,10 @@ public final class AvroExtractRecordSink implements ExtractRecordSink {
                 connectAvroSchemas.toTopLevelRecord(topLevelSchema, extractNode, payloadNode);
         dataFileWriter.append(record);
         dataFileWriter.flush();
+        return byteDelta();
+    }
+
+    private int byteDelta() {
         long now = countingStream.bytesWritten();
         int delta = (int) Math.min(Integer.MAX_VALUE, Math.max(0L, now - bytesAtLastWrite));
         bytesAtLastWrite = now;

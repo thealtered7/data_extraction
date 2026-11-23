@@ -111,6 +111,25 @@ public class ConnectAvroSchemas {
         return fields.endRecord();
     }
 
+    public GenericRecord wrapPayload(
+            Schema topLevelSchema,
+            String extractJobId,
+            String extractBufferId,
+            String extractType,
+            String extractedAt,
+            GenericRecord payload) {
+        Schema extractSchema = nullableBranch(topLevelSchema.getField("extract").schema(), Schema.Type.RECORD);
+        GenericRecord extract = new GenericData.Record(extractSchema);
+        extract.put("extract_job_id", extractJobId);
+        extract.put("extract_buffer_id", extractBufferId);
+        extract.put("extract_type", extractType);
+        extract.put("extracted_at", extractedAt);
+        GenericRecord record = new GenericData.Record(topLevelSchema);
+        record.put("extract", extract);
+        record.put("payload", payload);
+        return record;
+    }
+
     public GenericRecord toTopLevelRecord(Schema topLevelSchema, JsonNode extractNode, JsonNode payloadNode)
             throws IOException {
         GenericRecord record = new GenericData.Record(topLevelSchema);

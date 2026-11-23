@@ -3,6 +3,7 @@ package com.dataextraction;
 import com.dataextraction.config.CatalogProperties;
 import com.dataextraction.config.DataExtractionProperties;
 import com.dataextraction.config.DatabaseProperties;
+import com.dataextraction.config.DebeziumProperties;
 import com.dataextraction.config.DatapipelinesProperties;
 import com.dataextraction.config.FileWriterProperties;
 import com.dataextraction.config.KafkaProperties;
@@ -18,6 +19,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
     CatalogProperties.class,
     DataExtractionProperties.class,
     DatabaseProperties.class,
+    DebeziumProperties.class,
     DatapipelinesProperties.class,
     FileWriterProperties.class,
     KafkaProperties.class,

@@ -1,6 +1,8 @@
 package com.dataextraction.cdc_consumer.impl;
 
-import com.dataextraction.buffer.ExtractJsonBuffer;
+import com.dataextraction.buffer.ExtractBuffer;
+import com.dataextraction.buffer.ExtractBufferFactory;
+import com.dataextraction.buffer.ExtractBufferRequest;
 import com.dataextraction.buffer.FlushedBufferHandler;
 import com.dataextraction.notify.FileWrittenObserver;
 import com.dataextraction.notify.events.FileWriteFlushEvent;
@@ -9,7 +11,9 @@ import com.dataextraction.cdc_consumer.process.EngineShutdownCoordinator;
 import com.dataextraction.cdc_consumer.process.WalIdleTimeoutWatcher;
 import com.dataextraction.sink.ExtractRecordSink;
 import com.dataextraction.sink.ExtractRecordSinkFactory;
-import com.dataextraction.cdc_consumer.JsonRecordDelegate;
+import com.dataextraction.cdc_consumer.RecordDelegate;
+import com.dataextraction.cdc_consumer.RecordDelegateFactory;
+import com.dataextraction.cdc_consumer.format.RecordDeserializer;
 import com.dataextraction.observability.Observability;
 import com.dataextraction.schemaregistry.CdcSchemaRegistrar;
 import com.dataextraction.schemaregistry.TableFqn;
@@ -25,7 +29,7 @@ import java.util.function.Consumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public class BufferedFileWriteConsumer implements Consumer<ChangeEvent<String, String>>, AutoCloseable {
+public class BufferedFileWriteConsumer<T> implements Consumer<ChangeEvent<T, T>>, AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(BufferedFileWriteConsumer.class);
     private static final Integer DEFAULT_MAX_BUFFER_SIZE_BYTES = 1024 * 1024 * 100;
@@ -33,7 +37,7 @@ public class BufferedFileWriteConsumer implements Consumer<ChangeEvent<String, S
     private static final String OUTCOME_HIGH_WATER_MARK_REACHED = "high_water_mark_reached";
 
     private Integer maxBufferSize;
-    private Map<String, ExtractJsonBuffer> bufferMap;
+    private Map<String, ExtractBuffer> bufferMap;
     private PostgresLsn highWaterMark;
     private PostgresLsn effectiveHighWaterMark;
     private EngineShutdownCoordinator engineShutdownCoordinator;
@@ -46,6 +50,9 @@ public class BufferedFileWriteConsumer implements Consumer<ChangeEvent<String, S
     private final CdcSchemaRegistrar schemaRegistrar;
     private final FlushedBufferHandler flushedBufferHandler;
     private final ExtractRecordSinkFactory extractRecordSinkFactory;
+    private final RecordDeserializer<T> deserializer;
+    private final RecordDelegateFactory delegateFactory;
+    private final ExtractBufferFactory bufferFactory;
 
     private BufferedFileWriteConsumer(Builder builder) {
         Objects.requireNonNull(builder.observability, "observability is required");
@@ -56,6 +63,9 @@ public class BufferedFileWriteConsumer implements Consumer<ChangeEvent<String, S
         Objects.requireNonNull(builder.schemaRegistrar, "schemaRegistrar is required");
         Objects.requireNonNull(builder.flushedBufferHandler, "flushedBufferHandler is required");
         Objects.requireNonNull(builder.extractRecordSinkFactory, "extractRecordSinkFactory is required");
+        Objects.requireNonNull(builder.deserializer, "deserializer is required");
+        Objects.requireNonNull(builder.delegateFactory, "delegateFactory is required");
+        Objects.requireNonNull(builder.bufferFactory, "bufferFactory is required");
 
         this.maxBufferSize = builder.maxBufferSize != null ? builder.maxBufferSize : DEFAULT_MAX_BUFFER_SIZE_BYTES;
         this.bufferMap = new HashMap<>();
@@ -67,13 +77,16 @@ public class BufferedFileWriteConsumer implements Consumer<ChangeEvent<String, S
         this.schemaRegistrar = builder.schemaRegistrar;
         this.flushedBufferHandler = builder.flushedBufferHandler;
         this.extractRecordSinkFactory = builder.extractRecordSinkFactory;
+        this.deserializer = builder.deserializer;
+        this.delegateFactory = builder.delegateFactory;
+        this.bufferFactory = builder.bufferFactory;
     }
 
-    public static Builder builder() {
-        return new Builder();
+    public static <T> Builder<T> builder() {
+        return new Builder<>();
     }
 
-    public static class Builder {
+    public static class Builder<T> {
         private Integer maxBufferSize;
         private Observability observability;
         private Vector<FileWrittenObserver> fileWrittenObserver;
@@ -83,54 +96,72 @@ public class BufferedFileWriteConsumer implements Consumer<ChangeEvent<String, S
         private CdcSchemaRegistrar schemaRegistrar;
         private FlushedBufferHandler flushedBufferHandler;
         private ExtractRecordSinkFactory extractRecordSinkFactory;
+        private RecordDeserializer<T> deserializer;
+        private RecordDelegateFactory delegateFactory;
+        private ExtractBufferFactory bufferFactory;
 
-        public Builder withMaxBufferSize(Integer maxBufferSize) {
+        public Builder<T> withMaxBufferSize(Integer maxBufferSize) {
             this.maxBufferSize = maxBufferSize;
             return this;
         }
 
-        public Builder withObservability(Observability observability) {
+        public Builder<T> withObservability(Observability observability) {
             this.observability = observability;
             return this;
         }
 
-        public Builder withFileWrittenObserver(Vector<FileWrittenObserver> fileWrittenObserver) {
+        public Builder<T> withFileWrittenObserver(Vector<FileWrittenObserver> fileWrittenObserver) {
             this.fileWrittenObserver = fileWrittenObserver;
             return this;
         }
 
-        public Builder withRunGuid(String runGuid) {
+        public Builder<T> withRunGuid(String runGuid) {
             this.runGuid = runGuid;
             return this;
         }
 
-        public Builder withInstanceName(String instanceName) {
+        public Builder<T> withInstanceName(String instanceName) {
             this.instanceName = instanceName;
             return this;
         }
 
-        public Builder withExtractType(String extractType) {
+        public Builder<T> withExtractType(String extractType) {
             this.extractType = extractType;
             return this;
         }
 
-        public Builder withSchemaRegistrar(CdcSchemaRegistrar schemaRegistrar) {
+        public Builder<T> withSchemaRegistrar(CdcSchemaRegistrar schemaRegistrar) {
             this.schemaRegistrar = schemaRegistrar;
             return this;
         }
 
-        public Builder withFlushedBufferHandler(FlushedBufferHandler flushedBufferHandler) {
+        public Builder<T> withFlushedBufferHandler(FlushedBufferHandler flushedBufferHandler) {
             this.flushedBufferHandler = flushedBufferHandler;
             return this;
         }
 
-        public Builder withExtractRecordSinkFactory(ExtractRecordSinkFactory extractRecordSinkFactory) {
+        public Builder<T> withExtractRecordSinkFactory(ExtractRecordSinkFactory extractRecordSinkFactory) {
             this.extractRecordSinkFactory = extractRecordSinkFactory;
             return this;
         }
 
-        public BufferedFileWriteConsumer build() {
-            return new BufferedFileWriteConsumer(this);
+        public Builder<T> withDeserializer(RecordDeserializer<T> deserializer) {
+            this.deserializer = deserializer;
+            return this;
+        }
+
+        public Builder<T> withDelegateFactory(RecordDelegateFactory delegateFactory) {
+            this.delegateFactory = delegateFactory;
+            return this;
+        }
+
+        public Builder<T> withBufferFactory(ExtractBufferFactory bufferFactory) {
+            this.bufferFactory = bufferFactory;
+            return this;
+        }
+
+        public BufferedFileWriteConsumer<T> build() {
+            return new BufferedFileWriteConsumer<>(this);
         }
     }
 
@@ -151,23 +182,22 @@ public class BufferedFileWriteConsumer implements Consumer<ChangeEvent<String, S
         this.walIdleTimeoutWatcher = walIdleTimeoutWatcher;
     }
 
-    private ExtractJsonBuffer getBuffer(String tableName) {
-        ExtractJsonBuffer buffer = this.bufferMap.get(tableName);
+    private ExtractBuffer getBuffer(String tableName) {
+        ExtractBuffer buffer = this.bufferMap.get(tableName);
         if (buffer == null) {
-
             ExtractRecordSink recordSink = this.extractRecordSinkFactory.create();
-            buffer = ExtractJsonBuffer.builder()
+            buffer = this.bufferFactory.create(ExtractBufferRequest.builder()
                 .withTableName(tableName)
-                .withExtractType(extractType)       
+                .withExtractType(extractType)
                 .withExtractJobId(this.runGuid)
                 .withMaxBufferSize(this.maxBufferSize)
                 .withObservability(this.observability)
                 .withOnFlush(this::notifyFileWrittenObservers)
                 .withInstanceName(this.instanceName)
-                .withSchemaRegistrar(this.schemaRegistrar)                
+                .withSchemaRegistrar(this.schemaRegistrar)
                 .withSink(recordSink)
                 .withFlushedBufferHandler(this.flushedBufferHandler)
-                .build();
+                .build());
             this.bufferMap.put(tableName, buffer);
         }
         return buffer;
@@ -214,37 +244,39 @@ public class BufferedFileWriteConsumer implements Consumer<ChangeEvent<String, S
     }
 
     @Override
-    public void accept(ChangeEvent<String, String> record) {
+    public void accept(ChangeEvent<T, T> record) {
         observability.observeAcceptVoid(
                 "accept",
                 () -> acceptRecord(record),
                 ex -> ex instanceof StopEngineException ? OUTCOME_HIGH_WATER_MARK_REACHED : "error");
     }
 
-    private String acceptRecord(ChangeEvent<String, String> record) {
+    private String acceptRecord(ChangeEvent<T, T> record) {
         try {
-            if (JsonRecordDelegate.isHeartbeat(record.key(), record.value())) {
+            RecordDelegate delegate = delegateFactory.create(
+                    record.destination(),
+                    deserializer.deserialize(record.destination(), record.key(), record.value()));
+            if (delegate.isHeartbeat()) {
                 log.debug("skipping heartbeat event");
                 return "skipped_heartbeat";
             }
-            if (JsonRecordDelegate.isTombstone(record.value())) {
+            if (delegate.isTombstone()) {
                 log.debug("skipping delete tombstone event");
                 return "skipped_tombstone";
             }
-            JsonRecordDelegate jsonRecordDelegate = new JsonRecordDelegate(record.value());
-            if (!jsonRecordDelegate.isCdcChangeEvent()) {
+            if (!delegate.isCdcChangeEvent()) {
                 log.debug("skipping non-CDC event");
                 return "skipped_non_cdc";
             }
             if (walIdleTimeoutWatcher != null) {
                 walIdleTimeoutWatcher.resetOnCdcEvent();
             }
-            String tableName = jsonRecordDelegate.getTableName();
+            String tableName = delegate.getTableName();
             TableFqn fqn = TableFqn.parse(tableName);
             observability.tagSource(instanceName, fqn.databaseName(), fqn.schemaName(), fqn.tableName());
-            Long recordLsn = jsonRecordDelegate.getLsn();
-            ExtractJsonBuffer buffer = this.getBuffer(tableName);
-            int bytesWritten = buffer.write(record);
+            Long recordLsn = delegate.getLsn();
+            ExtractBuffer buffer = this.getBuffer(tableName);
+            int bytesWritten = buffer.write(delegate);
             if (bytesWritten == -1) {
                 log.error("failed to write CDC record");
                 return "write_error";
@@ -274,7 +306,7 @@ public class BufferedFileWriteConsumer implements Consumer<ChangeEvent<String, S
         log.info("shutting down file writer");
         synchronized (this) {
             IOException firstError = null;
-            for (ExtractJsonBuffer buffer : this.bufferMap.values()) {
+            for (ExtractBuffer buffer : this.bufferMap.values()) {
                 try {
                     buffer.close();
                 } catch (IOException e) {
@@ -292,6 +324,15 @@ public class BufferedFileWriteConsumer implements Consumer<ChangeEvent<String, S
             if (firstError != null) {
                 throw firstError;
             }
+            closeDeserializer();
+        }
+    }
+
+    private void closeDeserializer() {
+        try {
+            deserializer.close();
+        } catch (Exception e) {
+            log.debug("Failed to close change deserializer", e);
         }
     }
 

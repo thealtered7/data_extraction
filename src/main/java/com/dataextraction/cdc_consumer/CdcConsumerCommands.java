@@ -21,9 +21,13 @@ import org.springframework.shell.standard.ShellMethod;
 import com.dataextraction.buffer.FlushedBufferHandler;
 import com.dataextraction.buffer.impl.LocalFileStoreFlushedBufferHandler;
 import com.dataextraction.cdc_consumer.process.EngineShutdownCoordinator;
+import com.dataextraction.cdc_consumer.format.ChangeFormatSupport;
+import com.dataextraction.cdc_consumer.format.SnapshotDependencies;
+import com.dataextraction.cdc_consumer.format.StartedSnapshot;
 import com.dataextraction.config.CatalogProperties;
 import com.dataextraction.config.DataExtractionProperties;
 import com.dataextraction.config.DatabaseProperties;
+import com.dataextraction.config.DebeziumProperties;
 import com.dataextraction.config.DatapipelinesProperties;
 import com.dataextraction.config.FileWriterProperties;
 import com.dataextraction.config.JwtProperties;
@@ -51,10 +55,8 @@ import com.dataextraction.sink.impl.ConnectAvroSchemas;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
-import io.debezium.engine.ChangeEvent;
 import io.debezium.engine.DebeziumEngine;
 import io.debezium.engine.StopEngineException;
-import io.debezium.engine.format.Json;
 
 import com.dataextraction.config.KafkaProperties;
 
@@ -71,6 +73,7 @@ public class CdcConsumerCommands {
     private final SchemaRegistryProperties schemaRegistryProperties;
     private final SinkProperties sinkProperties;
     private final KafkaProperties kafkaProperties;
+    private final DebeziumProperties debeziumProperties;
 
     public CdcConsumerCommands(
             CatalogProperties catalogProperties,
@@ -81,7 +84,8 @@ public class CdcConsumerCommands {
             DataExtractionProperties dataExtractionProperties,
             SchemaRegistryProperties schemaRegistryProperties,
             SinkProperties sinkProperties,
-            KafkaProperties kafkaProperties) {
+            KafkaProperties kafkaProperties,
+            DebeziumProperties debeziumProperties) {
         this.catalogProperties = catalogProperties;
         this.datapipelinesProperties = datapipelinesProperties;
         this.databaseProperties = databaseProperties;
@@ -91,6 +95,7 @@ public class CdcConsumerCommands {
         this.schemaRegistryProperties = schemaRegistryProperties;
         this.sinkProperties = sinkProperties;
         this.kafkaProperties = kafkaProperties;
+        this.debeziumProperties = debeziumProperties;
     }
 
     public DatapipelinesProperties getDatapipelinesProperties() {
@@ -231,28 +236,18 @@ public class CdcConsumerCommands {
 
         int maxBufferSizeBytes = dataExtractionProperties.getMaxBufferSizeBytes();
 
-        
-        String extractType = "snapshot";        
+        String extractType = "snapshot";
         ExtractRecordSinkFactory sinkFactory = createSinkFactory();
         FlushedBufferHandler flushedBufferHandler = createFlushedBufferHandler(observability);
-        
-        SnapShotFileWriteConsumer.Builder snapshotBuilder = SnapShotFileWriteConsumer.builder()
+
+        SnapshotDependencies.Builder snapshotDependencies = SnapshotDependencies.builder()
                 .withMaxBufferSize(maxBufferSizeBytes)
                 .withObservability(observability)
                 .addFileWrittenObserver(fileWriteObserverKafka)
                 .addFileWrittenObserver(fileWriteObserverDataPipelines);
         if (extractJobReporter != null) {
-            snapshotBuilder.addFileWrittenObserver(new FileWriteObserverExtractJob(extractJobReporter, observability));
+            snapshotDependencies.addFileWrittenObserver(new FileWriteObserverExtractJob(extractJobReporter, observability));
         }
-        SnapShotFileWriteConsumer snapshotConsumer = snapshotBuilder
-                .withRunGuid(jobId)
-                .withInstanceName(databaseProperties.getInstanceName())
-                .withExtractType(extractType)
-                .withSchemaRegistrar(cdcSchemaRegistrar)
-                .withFlushedBufferHandler(flushedBufferHandler)
-                .withSinkFactory(sinkFactory)
-                .build();
-        snapshotConsumer.init();
 
         ExecutorService executor = Executors.newSingleThreadExecutor();
         CountDownLatch shutdownLatch = new CountDownLatch(1);
@@ -260,34 +255,39 @@ public class CdcConsumerCommands {
 
         resetSnapshotOffsetFile();
         Properties connectorProps = createSnapshotConnectorProps();
-        DebeziumEngine<ChangeEvent<String, String>> engine = DebeziumEngine.create(Json.class)
-                .using(connectorProps)
-                .using((success, message, error) -> {
-                    if (!success && error != null && !(error instanceof StopEngineException)) {
-                        log.warn("Snapshot engine stopped with error: {}", message, error);
-                        if (extractJobReporter != null) {
-                            extractJobReporter.markFailed();
-                        }
-                    } else {
-                        log.info("Snapshot engine stopped: {}", message);
-                    }
-                    EngineShutdownCoordinator coordinator = coordinatorRef.get();
-                    if (coordinator != null) {
-                        coordinator.shutdown();
-                    }
-                })
-                .notifying(snapshotConsumer)
-                .build();
+        DebeziumEngine.CompletionCallback completion = (success, message, error) -> {
+            if (!success && error != null && !(error instanceof StopEngineException)) {
+                log.warn("Snapshot engine stopped with error: {}", message, error);
+                if (extractJobReporter != null) {
+                    extractJobReporter.markFailed();
+                }
+            } else {
+                log.info("Snapshot engine stopped: {}", message);
+            }
+            EngineShutdownCoordinator coordinator = coordinatorRef.get();
+            if (coordinator != null) {
+                coordinator.shutdown();
+            }
+        };
+        StartedSnapshot started = ChangeFormatSupport.from(debeziumProperties, schemaRegistryProperties)
+                .startSnapshot(connectorProps, snapshotDependencies
+                        .withRunGuid(jobId)
+                        .withInstanceName(databaseProperties.getInstanceName())
+                        .withExtractType(extractType)
+                        .withSchemaRegistrar(cdcSchemaRegistrar)
+                        .withFlushedBufferHandler(flushedBufferHandler)
+                        .withSinkFactory(sinkFactory)
+                        .build(), completion);
 
         EngineShutdownCoordinator coordinator =
-                new EngineShutdownCoordinator(engine, snapshotConsumer, executor, shutdownLatch);
+                new EngineShutdownCoordinator(started.engine(), started.consumer(), executor, shutdownLatch);
         coordinatorRef.set(coordinator);
         coordinator.registerShutdownHook();
 
         if (extractJobReporter != null) {
             extractJobReporter.start();
         }
-        executor.execute(engine);
+        executor.execute(started.engineTask());
         coordinator.awaitShutdown();
         if (extractJobReporter != null) {
             extractJobReporter.finish();

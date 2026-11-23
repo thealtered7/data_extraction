@@ -3,14 +3,14 @@ package com.dataextraction.buffer;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.dataextraction.cdc_consumer.RecordDelegate;
+import com.dataextraction.cdc_consumer.format.DeserializedRecord;
 import com.dataextraction.notify.events.FileWriteFlushEvent;
 import com.dataextraction.observability.Observability;
 import com.dataextraction.sink.ExtractOutputFormat;
 import com.dataextraction.sink.ExtractRecordSink;
 import com.dataextraction.schemaregistry.CdcSchemaRegistrar;
 import com.dataextraction.schemaregistry.TableFqn;
-
-import io.debezium.engine.ChangeEvent;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
@@ -26,7 +26,7 @@ import java.util.zip.CRC32C;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public class ExtractJsonBuffer {
+public class ExtractJsonBuffer implements ExtractBuffer {
     private static final Logger log = LoggerFactory.getLogger(ExtractJsonBuffer.class);
 
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
@@ -158,30 +158,34 @@ public class ExtractJsonBuffer {
         }
     }
     
+    @Override
     public ExtractOutputFormat outputFormat() {
         return this.sink.getOutputFormat();
     }
 
-    public int write(ChangeEvent<String, String> record) throws IOException {
+    @Override
+    public int write(RecordDelegate record) throws IOException {
         final int[] bytesWritten = {-1};
         observability.observeOperationVoid(
                 Observability.CDC_EVENT_WRITTEN_TO_BUFFER_COUNTER,
                 "write",
                 tableTags(),
                 () -> {
-                    bytesWritten[0] = writeRecord(record);
+                    bytesWritten[0] = writeRecord(record.decoded());
                     return bytesWritten[0] == -1 ? "write_error" : "success";
                 });
         return bytesWritten[0];
     }
 
-    private int writeRecord(ChangeEvent<String, String> record) {
+    private int writeRecord(DeserializedRecord record) {
         try {
-            if (record.value() == null) {
+            String keyJson = asJsonText(record.key());
+            String valueJson = asJsonText(record.value());
+            if (valueJson == null) {
                 return -1;
             }
-            String nextKeySchema = extractConnectSchema(record.key());
-            String nextValueSchema = extractConnectSchema(record.value());
+            String nextKeySchema = extractConnectSchema(keyJson);
+            String nextValueSchema = extractConnectSchema(valueJson);
             long nextKeySchemaHash = schemaHash(nextKeySchema);
             long nextValueSchemaHash = schemaHash(nextValueSchema);
 
@@ -195,15 +199,15 @@ public class ExtractJsonBuffer {
                 flushBuffer();
             }
 
-            ObjectNode enriched = enrichWithExtract(record.value());
+            ObjectNode enriched = enrichWithExtract(valueJson);
             int estimatedSize = estimateSerializedSize(enriched);
             if (this.bytesWritten > 0 && this.bytesWritten + estimatedSize > maxBufferSize) {
                 flushBuffer();
-                enriched = enrichWithExtract(record.value());
+                enriched = enrichWithExtract(valueJson);
             }
 
             captureSchemas(nextKeySchema, nextKeySchemaHash, nextValueSchema, nextValueSchemaHash);
-            trackSourceLsn(record.value());
+            trackSourceLsn(valueJson);
             if (log.isDebugEnabled()) {
                 log.debug("writing CDC record: {}", OBJECT_MAPPER.writeValueAsString(enriched));
             }
@@ -325,6 +329,14 @@ public class ExtractJsonBuffer {
         return OBJECT_MAPPER.writeValueAsBytes(enriched).length + 1;
     }
 
+    private static String asJsonText(Object value) {
+        if (value == null) {
+            return null;
+        }
+        return value instanceof String text ? text : value.toString();
+    }
+
+    @Override
     public void flush() throws IOException {
         try {
             observability.observeCallableVoid(
@@ -432,6 +444,7 @@ public class ExtractJsonBuffer {
         }
     }
 
+    @Override
     public void close() throws IOException {
         try {
             observability.observeCallableVoid(
