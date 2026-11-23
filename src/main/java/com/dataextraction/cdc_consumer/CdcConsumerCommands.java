@@ -334,6 +334,11 @@ public class CdcConsumerCommands {
         connectorProps.setProperty("offset.storage.file.filename", databaseProperties.getOffsetStorageFileFilename());
         connectorProps.setProperty("record.processing.threads", "1");
         connectorProps.setProperty("snapshot.max.threads", "1");
+        String tableIncludeList = databaseProperties.getTableIncludeList();
+        if (tableIncludeList != null && !tableIncludeList.isBlank()) {
+            connectorProps.setProperty("table.include.list", tableIncludeList.trim());
+            log.info("Snapshot table include list: {}", tableIncludeList.trim());
+        }
         return connectorProps;
     }
 

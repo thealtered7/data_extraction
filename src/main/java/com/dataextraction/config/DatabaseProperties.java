@@ -14,6 +14,11 @@ public class DatabaseProperties {
     private String publicationName = "extract_publication";
     private String offsetStorageFileFilename = "offset.json";
     private String instanceName = "geo-database";
+    /**
+     * Debezium {@code table.include.list}: an anchored regular expression of
+     * {@code schema.table} names. Blank snapshots every non-system table.
+     */
+    private String tableIncludeList;
 
     public String getHostname() {
         return hostname;
@@ -89,5 +94,13 @@ public class DatabaseProperties {
 
     public void setInstanceName(String instanceName) {
         this.instanceName = instanceName;
+    }
+
+    public String getTableIncludeList() {
+        return tableIncludeList;
+    }
+
+    public void setTableIncludeList(String tableIncludeList) {
+        this.tableIncludeList = tableIncludeList;
     }
 }
