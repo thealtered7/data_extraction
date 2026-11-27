@@ -129,6 +129,7 @@ public final class DatapipelinesHttpClient {
     }
 
     private void sendTableWrite(String jobId, FileWriteFlushEvent event) throws Exception {
+        boolean snapshot = "snapshot".equalsIgnoreCase(event.getExtractType());
         TableWriteRequest requestBody = new TableWriteRequest(
                 WRITE_TYPE_RAW,
                 null,
@@ -158,8 +159,8 @@ public final class DatapipelinesHttpClient {
                 event.getValueSchema(),
                 event.getKeySchemaId(),
                 event.getValueSchemaId(),
-                event.getSourceMinLsn(),
-                event.getSourceMaxLsn());
+                snapshot ? null : event.getSourceMinLsn(),
+                snapshot ? null : event.getSourceMaxLsn());
         HttpResponse<String> response = sendJson(tableWritesEndpoint, "POST", requestBody);
         int status = response.statusCode();
         if (status < 200 || status >= 300) {

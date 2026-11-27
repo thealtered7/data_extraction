@@ -21,6 +21,7 @@ import org.springframework.shell.standard.ShellMethod;
 import com.dataextraction.buffer.FlushedBufferHandler;
 import com.dataextraction.buffer.impl.LocalFileStoreFlushedBufferHandler;
 import com.dataextraction.cdc_consumer.impl.BufferedFileWriteConsumer;
+import com.dataextraction.cdc_consumer.process.BatchEndCaughtUpWatcher;
 import com.dataextraction.cdc_consumer.process.EngineShutdownCoordinator;
 import com.dataextraction.cdc_consumer.process.WalIdleTimeoutWatcher;
 import com.dataextraction.cdc_consumer.format.ChangeFormatSupport;
@@ -48,6 +49,7 @@ import com.dataextraction.observability.ObservabilityFactory;
 import com.dataextraction.pg.meta.PostgresConnectionFactory;
 import com.dataextraction.pg.meta.PostgresLsn;
 import com.dataextraction.pg.meta.PostgresMetaDataDB;
+import com.dataextraction.pg.meta.ReplicationSlotInfo;
 import com.dataextraction.notify.events.FileWriteFlushEvent;
 import com.dataextraction.notify.impl.FileWriteObserverDataPipelines;
 import com.dataextraction.notify.impl.FileWriteObserverExtractJob;
@@ -352,7 +354,14 @@ public class CdcConsumerCommands {
         }
         String offsetFile = databaseProperties.getCdcOffsetStorageFileFilename();
         if (offsetFile != null && !offsetFile.isBlank()) {
-            log.info("Debezium replication offset file (kept across runs): {}", offsetFile);
+            Path offsetPath = Path.of(offsetFile);
+            if (Files.exists(offsetPath)) {
+                log.info("Debezium replication offset file (kept across runs): {}", offsetPath.toAbsolutePath());
+            } else {
+                log.warn(
+                        "Debezium replication offset file missing ({}). Streaming will resume from replication slot position.",
+                        offsetPath.toAbsolutePath());
+            }
         }
 
         int maxBufferSizeBytes = dataExtractionProperties.getMaxBufferSizeBytes();
@@ -373,6 +382,7 @@ public class CdcConsumerCommands {
         CountDownLatch shutdownLatch = new CountDownLatch(1);
         AtomicReference<EngineShutdownCoordinator> coordinatorRef = new AtomicReference<>();
         AtomicReference<WalIdleTimeoutWatcher> idleTimeoutWatcherRef = new AtomicReference<>();
+        AtomicReference<BatchEndCaughtUpWatcher> batchEndWatcherRef = new AtomicReference<>();
 
         Properties connectorProps = replicationConnectorConfig.create(databaseProperties);
         ChangeFormatSupport formatSupport = ChangeFormatSupport.from(debeziumProperties, schemaRegistryProperties);
@@ -398,6 +408,10 @@ public class CdcConsumerCommands {
             if (watcher != null) {
                 watcher.cancel();
             }
+            BatchEndCaughtUpWatcher batchEndWatcher = batchEndWatcherRef.get();
+            if (batchEndWatcher != null) {
+                batchEndWatcher.cancel();
+            }
             EngineShutdownCoordinator coordinator = coordinatorRef.get();
             if (coordinator != null) {
                 coordinator.shutdown();
@@ -415,25 +429,59 @@ public class CdcConsumerCommands {
         if (idleTimeoutWatcher != null) {
             idleTimeoutWatcherRef.set(idleTimeoutWatcher);
             consumer.setWalIdleTimeoutWatcher(idleTimeoutWatcher);
-            idleTimeoutWatcher.start();
         }
 
         if (cdcReplicationProperties.isHighWaterMarkEnabled()) {
             try {
                 PostgresLsn batchEndLsn = postgresMetaDataDB.getHighWaterMark().getHighWaterMark();
+                PostgresLsn confirmedFlushLsn = readConfirmedFlushLsn(postgresMetaDataDB, slotName);
                 log.info("Batch end LSN captured before engine start: {}", batchEndLsn);
+                if (confirmedFlushLsn != null && confirmedFlushLsn.compareTo(batchEndLsn) >= 0) {
+                    log.info(
+                            "Replication slot confirmed_flush_lsn {} is at the high water mark {}; terminating",
+                            confirmedFlushLsn,
+                            batchEndLsn);
+                    if (idleTimeoutWatcher != null) {
+                        idleTimeoutWatcher.cancel();
+                    }
+                    coordinator.shutdown();
+                    ObservabilityFactory.getInstance().close();
+                    return "CDC REPLICATION COMPLETED";
+                }
                 consumer.setHighWaterMark(batchEndLsn);
-            } catch (SQLException e) {
+                if (idleTimeoutWatcher != null) {
+                    idleTimeoutWatcher.deferIdleShutdownUntilPastHighWaterMark();
+                    idleTimeoutWatcher.start();
+                }
+                BatchEndCaughtUpWatcher batchEndWatcher = new BatchEndCaughtUpWatcher(
+                        batchEndLsn,
+                        () -> readConfirmedFlushLsn(postgresMetaDataDB, slotName),
+                        () -> readWalSenderSentLsn(postgresMetaDataDB, slotName),
+                        coordinator,
+                        () -> onReplicationCaughtUp(idleTimeoutWatcher, coordinator));
+                batchEndWatcher.setWalSenderWaitingForWal(
+                        () -> readWalSenderWaitingForWal(postgresMetaDataDB, slotName),
+                        () -> onWalSenderWaitingForWal(idleTimeoutWatcher, coordinator));
+                batchEndWatcherRef.set(batchEndWatcher);
+                batchEndWatcher.start();
+            } catch (Exception e) {
                 log.error("Error reading WAL high water mark: {}", e.getMessage());
                 WalIdleTimeoutWatcher watcher = idleTimeoutWatcherRef.get();
                 if (watcher != null) {
                     watcher.cancel();
+                }
+                BatchEndCaughtUpWatcher batchEndWatcher = batchEndWatcherRef.get();
+                if (batchEndWatcher != null) {
+                    batchEndWatcher.cancel();
                 }
                 coordinator.shutdown();
                 return "Error reading WAL high water mark: " + e.getMessage();
             }
         } else {
             log.info("High water mark stopping disabled; engine will run until WAL idle timeout or shutdown");
+            if (idleTimeoutWatcher != null) {
+                idleTimeoutWatcher.start();
+            }
         }
 
         if (extractJobReporter != null) {
@@ -450,6 +498,55 @@ public class CdcConsumerCommands {
 
     private DatapipelinesHttpClient createDatapipelinesHttpClient(Observability observability) {
         return datapipelinesProperties.createDatePipelinesHttpClient(observability);
+    }
+
+    private void onReplicationCaughtUp(WalIdleTimeoutWatcher idleTimeoutWatcher, EngineShutdownCoordinator coordinator) {
+        if (idleTimeoutWatcher != null) {
+            // Open the post-mark window. The countdown is already running; this allows it to
+            // stop the process, and in-flight changes reset it.
+            idleTimeoutWatcher.markPastHighWaterMark();
+            return;
+        }
+        log.info("High water mark reached; shutting down");
+        coordinator.shutdown();
+    }
+
+    private void onWalSenderWaitingForWal(
+            WalIdleTimeoutWatcher idleTimeoutWatcher, EngineShutdownCoordinator coordinator) {
+        if (idleTimeoutWatcher != null) {
+            idleTimeoutWatcher.allowIdleShutdown();
+            return;
+        }
+        log.info("Walsender is waiting for new WAL; shutting down");
+        coordinator.shutdown();
+    }
+
+    private static boolean readWalSenderWaitingForWal(PostgresMetaDataDB metaDataDB, String slotName) {
+        try {
+            return metaDataDB.isWalSenderWaitingForWal(slotName);
+        } catch (SQLException e) {
+            throw new IllegalStateException("Error reading walsender wait for slot " + slotName, e);
+        }
+    }
+
+    private static PostgresLsn readWalSenderSentLsn(PostgresMetaDataDB metaDataDB, String slotName) {
+        try {
+            return metaDataDB.getWalSenderSentLsn(slotName);
+        } catch (SQLException e) {
+            throw new IllegalStateException("Error reading sent_lsn for slot " + slotName, e);
+        }
+    }
+
+    private static PostgresLsn readConfirmedFlushLsn(PostgresMetaDataDB metaDataDB, String slotName) {
+        try {
+            ReplicationSlotInfo slot = metaDataDB.getReplicationSlotStatus(slotName);
+            if (slot == null || slot.flushLSN() == null || slot.flushLSN().isBlank()) {
+                return null;
+            }
+            return new PostgresLsn(slot.flushLSN());
+        } catch (SQLException e) {
+            throw new IllegalStateException("Error reading confirmed_flush_lsn for slot " + slotName, e);
+        }
     }
 
     /**

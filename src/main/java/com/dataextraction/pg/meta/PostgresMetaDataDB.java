@@ -113,6 +113,105 @@ public class PostgresMetaDataDB {
         }
     }
 
+    /**
+     * How far the active walsender has read. This advances through WAL that contains no
+     * publication changes, which leaves {@code confirmed_flush_lsn} unchanged.
+     */
+    /**
+     * True when the slot's walsender has read every flushed WAL record and is waiting for new
+     * WAL. {@code sent_lsn} is null for roles without {@code pg_read_all_stats}; this wait event
+     * is visible to the replication user.
+     */
+    public boolean isWalSenderWaitingForWal(String slotName) throws SQLException {
+        Map<String, String> tags = new HashMap<>();
+        tags.put("instance_name", this.getInstanceName());
+        tags.put("slot_name", slotName);
+        try {
+            return observability.observeCallable(
+                    Observability.POSTGRES_METADATA_PREFIX,
+                    "is_wal_sender_waiting_for_wal",
+                    tags,
+                    () -> queryWalSenderWaitingForWal(slotName));
+        } catch (SQLException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new SQLException("Error reading walsender wait for slot " + slotName, e);
+        }
+    }
+
+    private boolean queryWalSenderWaitingForWal(String slotName) throws SQLException {
+        Connection connection = connectionFactory.getConnection();
+        try {
+            PreparedStatement preparedStatement = connection.prepareStatement(
+                    """
+                    SELECT pg_stat_activity.wait_event = 'WalSenderWaitForWAL' AS waiting_for_wal
+                    FROM pg_replication_slots
+                    JOIN pg_stat_activity
+                      ON pg_stat_activity.pid = pg_replication_slots.active_pid
+                    WHERE pg_replication_slots.slot_name = ?
+                    """);
+            preparedStatement.setString(1, slotName);
+            ResultSet resultSet = preparedStatement.executeQuery();
+            try {
+                if (!resultSet.next()) {
+                    return false;
+                }
+                return resultSet.getBoolean("waiting_for_wal");
+            } finally {
+                resultSet.close();
+            }
+        } finally {
+            connection.close();
+        }
+    }
+
+    public PostgresLsn getWalSenderSentLsn(String slotName) throws SQLException {
+        Map<String, String> tags = new HashMap<>();
+        tags.put("instance_name", this.getInstanceName());
+        tags.put("slot_name", slotName);
+        try {
+            return observability.observeCallable(
+                    Observability.POSTGRES_METADATA_PREFIX,
+                    "get_wal_sender_sent_lsn",
+                    tags,
+                    () -> queryWalSenderSentLsn(slotName));
+        } catch (SQLException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new SQLException("Error getting walsender sent_lsn for slot " + slotName, e);
+        }
+    }
+
+    private PostgresLsn queryWalSenderSentLsn(String slotName) throws SQLException {
+        Connection connection = connectionFactory.getConnection();
+        try {
+            PreparedStatement preparedStatement = connection.prepareStatement(
+                    """
+                    SELECT pg_stat_replication.sent_lsn
+                    FROM pg_replication_slots
+                    JOIN pg_stat_replication
+                      ON pg_stat_replication.pid = pg_replication_slots.active_pid
+                    WHERE pg_replication_slots.slot_name = ?
+                    """);
+            preparedStatement.setString(1, slotName);
+            ResultSet resultSet = preparedStatement.executeQuery();
+            try {
+                if (!resultSet.next()) {
+                    return null;
+                }
+                String sentLsn = resultSet.getString("sent_lsn");
+                if (sentLsn == null || sentLsn.isBlank()) {
+                    return null;
+                }
+                return new PostgresLsn(sentLsn);
+            } finally {
+                resultSet.close();
+            }
+        } finally {
+            connection.close();
+        }
+    }
+
     public String getInstanceName() {
         if (this.connectionFactory != null) {
             return this.connectionFactory.getInstanceName();

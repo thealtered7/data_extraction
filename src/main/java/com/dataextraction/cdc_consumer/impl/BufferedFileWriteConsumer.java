@@ -17,10 +17,8 @@ import com.dataextraction.cdc_consumer.format.RecordDeserializer;
 import com.dataextraction.observability.Observability;
 import com.dataextraction.schemaregistry.CdcSchemaRegistrar;
 import com.dataextraction.schemaregistry.TableFqn;
-import io.debezium.embedded.EmbeddedEngineChangeEvent;
 import io.debezium.engine.ChangeEvent;
 import io.debezium.engine.StopEngineException;
-import org.apache.kafka.connect.source.SourceRecord;
 
 import java.io.IOException;
 import java.util.HashMap;
@@ -230,24 +228,15 @@ public class BufferedFileWriteConsumer<T> implements Consumer<ChangeEvent<T, T>>
             return true;
         }
         PostgresLsn recordLsnValue = PostgresLsn.fromDebeziumLsn(recordLsn);
-        boolean ret = recordLsnValue.compareTo(limit) <= 0;
+        boolean beforeHighWaterMark = recordLsnValue.compareTo(limit) < 0;
         log.debug(
                 "shouldContinue: recordLsn={} ({}) batchEndLsn={} ({}) -> {}",
                 recordLsn,
                 recordLsnValue,
                 limit.toLong(),
                 limit,
-                ret);
-        return ret;
-    }
-
-    /** Heartbeats stop at equality; CDC change events still process the last row at the HWM. */
-    private boolean isAtOrPastHighWaterMark(Long recordLsn) {
-        PostgresLsn limit = resolveEffectiveHighWaterMark();
-        if (recordLsn == null || limit == null) {
-            return false;
-        }
-        return PostgresLsn.fromDebeziumLsn(recordLsn).compareTo(limit) >= 0;
+                beforeHighWaterMark);
+        return beforeHighWaterMark;
     }
 
     private void shutdownEngine() {
@@ -268,22 +257,14 @@ public class BufferedFileWriteConsumer<T> implements Consumer<ChangeEvent<T, T>>
                     record.destination(),
                     deserializer.deserialize(record.destination(), record.key(), record.value()));
             if (delegate.isHeartbeat()) {
-                // Like pgoutput_to_json: heartbeats are not CDC and must not keep the process alive
-                // forever. Use Connect offset LSN only to stop once catch-up reaches the batch end.
-                Long heartbeatLsn = lsnFromSourceOffset(record);
-                if (heartbeatLsn != null && isAtOrPastHighWaterMark(heartbeatLsn)) {
+                Long heartbeatLsn = delegate.getLsn();
+                // Heartbeats do not extend the idle countdown. An LSN at or past the batch end stops the run.
+                if (heartbeatLsn != null && !shouldContinue(heartbeatLsn)) {
                     log.info(
-                            "Heartbeat LSN {} is at/past batch end LSN {}; shutting down",
+                            "Heartbeat LSN {} is at or past batch end LSN {}; shutting down",
                             heartbeatLsn,
                             resolveEffectiveHighWaterMark());
                     this.shutdownEngine();
-                }
-                // Still behind the batch end: treat as catch-up progress (offset is advancing through
-                // quiet WAL). Do not reset idle when LSN is unknown — tip idle must still fire.
-                if (walIdleTimeoutWatcher != null
-                        && heartbeatLsn != null
-                        && !isAtOrPastHighWaterMark(heartbeatLsn)) {
-                    walIdleTimeoutWatcher.resetOnCdcEvent();
                 }
                 log.debug("skipping heartbeat event");
                 return "skipped_heartbeat";
@@ -297,7 +278,7 @@ public class BufferedFileWriteConsumer<T> implements Consumer<ChangeEvent<T, T>>
                 return "skipped_non_cdc";
             }
             if (walIdleTimeoutWatcher != null) {
-                walIdleTimeoutWatcher.resetOnCdcEvent();
+                walIdleTimeoutWatcher.onWalDataRead();
             }
             String tableName = delegate.getTableName();
             TableFqn fqn = TableFqn.parse(tableName);
@@ -312,7 +293,7 @@ public class BufferedFileWriteConsumer<T> implements Consumer<ChangeEvent<T, T>>
             log.debug("wrote {} bytes to buffer for table: {}", bytesWritten, tableName);
             if (!shouldContinue(recordLsn)) {
                 log.info(
-                        "Record LSN {} is past batch end LSN {}; stopping engine after processing this record",
+                        "Record LSN {} is at or past batch end LSN {}; stopping engine after processing this record",
                         recordLsn,
                         resolveEffectiveHighWaterMark());
                 this.shutdownEngine();
@@ -323,30 +304,6 @@ public class BufferedFileWriteConsumer<T> implements Consumer<ChangeEvent<T, T>>
         } catch (Exception e) {
             log.error("failed to write CDC record", e);
             return "error";
-        }
-    }
-
-    /** LSN from the Connect source offset (used for heartbeats that have no payload source). */
-    private Long lsnFromSourceOffset(ChangeEvent<T, T> record) {
-        if (!(record instanceof EmbeddedEngineChangeEvent<?, ?, ?> embedded)) {
-            return null;
-        }
-        SourceRecord sourceRecord = embedded.sourceRecord();
-        if (sourceRecord == null || sourceRecord.sourceOffset() == null) {
-            return null;
-        }
-        Object lsn = sourceRecord.sourceOffset().get("lsn");
-        if (lsn instanceof Number number) {
-            return number.longValue();
-        }
-        if (lsn == null) {
-            return null;
-        }
-        try {
-            return Long.parseLong(lsn.toString());
-        } catch (NumberFormatException e) {
-            log.debug("source offset lsn is not a number: {}", lsn);
-            return null;
         }
     }
 

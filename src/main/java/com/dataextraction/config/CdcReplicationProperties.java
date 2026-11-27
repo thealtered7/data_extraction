@@ -3,8 +3,9 @@ package com.dataextraction.config;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /**
- * Catch-up replication. The engine stops once a change passes the WAL LSN captured at
- * start, and also stops after {@code walIdleTimeoutSeconds} with no CDC record.
+ * Catch-up replication. The engine stops when the slot is already at the WAL LSN captured at
+ * start, when a change reaches that LSN, or after {@code walIdleTimeoutSeconds} with no further
+ * WAL data once that LSN has been passed. The idle countdown starts when replication starts.
  */
 @ConfigurationProperties(prefix = "cdc")
 public class CdcReplicationProperties {

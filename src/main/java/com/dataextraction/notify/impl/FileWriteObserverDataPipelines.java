@@ -5,6 +5,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Objects;
 
@@ -13,6 +14,7 @@ import org.slf4j.LoggerFactory;
 
 import com.dataextraction.config.DatapipelinesProperties;
 import com.dataextraction.datapipelines.JwtTokenProvider;
+import com.dataextraction.datapipelines.requests.TableWriteRequest;
 import com.dataextraction.notify.FileWrittenObserver;
 import com.dataextraction.notify.events.FileWriteFlushEvent;
 import com.dataextraction.observability.Observability;
@@ -115,30 +117,46 @@ public class FileWriteObserverDataPipelines implements FileWrittenObserver {
     }
 
     private TableWriteRequest createFileWriteRequest(FileWriteFlushEvent event) {
+        boolean snapshot = "snapshot".equalsIgnoreCase(event.getExtractType());
         return new TableWriteRequest(
                 event.getWriteType(),
-                event.getRawFilePath(),
                 null,
-                event.getExtractStartAt(),
-                event.getExtractEndAt(),
-                event.getRawFileSize() == null ? 0L : event.getRawFileSize(),
-                event.getWriteRowCount() == null ? 0L : event.getWriteRowCount(),
+                null,
+                null,
+                null,
                 event.getSourceInstanceName(),
                 event.getSourceDatabaseName(),
                 event.getSourceSchemaName(),
-                event.getTableName(),
+                event.getSourceTableName(),
+                null,
+                null,
+                null,
+                event.getWriteRowCount(),
+                null,
+                event.getRawFilePath() == null ? null : event.getRawFilePath().toString(),
+                event.getRawFileSize(),
                 event.getExtractJobId(),
                 event.getExtractBufferId(),
                 event.getExtractType(),
-                event.getWarehousePath(),
+                event.getExtractStartAt(),
+                event.getExtractEndAt(),
+                null,
+                null,
+                directoryPath(event.getWarehousePath()),
                 event.getKeySchema(),
                 event.getValueSchema(),
                 event.getKeySchemaId(),
                 event.getValueSchemaId(),
-                event.getSourceMinLsn(),
-                event.getSourceMaxLsn(),
-                null,
-                null);
+                snapshot ? null : event.getSourceMinLsn(),
+                snapshot ? null : event.getSourceMaxLsn());
+    }
+
+    private static String directoryPath(Path dir) {
+        if (dir == null) {
+            return null;
+        }
+        String path = dir.toAbsolutePath().normalize().toString();
+        return path.endsWith("/") ? path : path + "/";
     }
 
     private void send(FileWriteFlushEvent event) throws Exception {

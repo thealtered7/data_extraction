@@ -7,7 +7,9 @@ SLOT ?=
 PUBLICATION ?=
 TABLE_INCLUDE_LIST ?=
 STREAMING_NETWORK ?= streaming_streaming
-AVRO_TOOLS_JAR ?= avro-tools-1.11.3.jar
+AVRO_TOOLS_VERSION ?= 1.11.3
+AVRO_TOOLS_JAR ?= build/avro-tools-$(AVRO_TOOLS_VERSION).jar
+AVRO_TOOLS_URL ?= https://repo1.maven.org/maven2/org/apache/avro/avro-tools/$(AVRO_TOOLS_VERSION)/avro-tools-$(AVRO_TOOLS_VERSION).jar
 ARGS ?=
 
 CONFIG_DIR := $(CURDIR)/config
@@ -103,5 +105,9 @@ cdc-replicate-docker: build-docker
 		$(IMAGE_NAME):$(PROJECT_VERSION) \
 		cdc-replicate
 
-avro-tools:
+$(AVRO_TOOLS_JAR):
+	@mkdir -p $(dir $@)
+	curl -fsSL -o $@ $(AVRO_TOOLS_URL)
+
+avro-tools: $(AVRO_TOOLS_JAR)
 	java -jar $(AVRO_TOOLS_JAR) $(ARGS)

@@ -10,7 +10,9 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermission;
 import java.time.Instant;
+import java.util.Set;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -47,6 +49,9 @@ class LocalFileStoreFlushedBufferHandlerTest {
         assertEquals(expected.toString(), writtenPath);
         assertArrayEquals(payload, Files.readAllBytes(expected));
         assertTrue(!writtenPath.contains(":"), "Spark/Hadoop reject ':' in avro paths");
+        Set<PosixFilePermission> directoryPermissions = Files.getPosixFilePermissions(expected.getParent());
+        assertTrue(directoryPermissions.contains(PosixFilePermission.OTHERS_WRITE));
+        assertTrue(directoryPermissions.contains(PosixFilePermission.GROUP_WRITE));
     }
 
     @Test

@@ -54,7 +54,11 @@ public final class AvroRecordDelegate implements RecordDelegate {
 
     @Override
     public Long getLsn() {
-        GenericRecord source = source();
+        GenericRecord source = source();        
+        if (isHeartbeat()) {
+            log.debug("Heartbeat event; using unknown LSN");
+            return null;
+        }
         if (source == null) {
             log.warn("Avro change event missing source; using unknown LSN");
             return null;

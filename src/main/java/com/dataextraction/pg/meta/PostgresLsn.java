@@ -61,6 +61,7 @@ public class PostgresLsn {
     }
 
     public String toString() {
-        return this.high + "/" + this.low;
+        // Match PostgreSQL's hex LSN display (e.g. 10/95EBF860), not decimal high/low.
+        return Long.toHexString(high).toUpperCase() + "/" + Long.toHexString(low).toUpperCase();
     }
 }

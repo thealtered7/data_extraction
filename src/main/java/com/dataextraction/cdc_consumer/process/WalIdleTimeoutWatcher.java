@@ -4,10 +4,16 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+/**
+ * Stops the engine after a quiet stretch. The countdown starts when the watcher starts. A WAL
+ * change resets it. When catch-up is bounded by a high water mark, expiry shuts down only after
+ * that mark has been passed.
+ */
 public final class WalIdleTimeoutWatcher {
 
     private static final Logger log = LoggerFactory.getLogger(WalIdleTimeoutWatcher.class);
@@ -16,7 +22,8 @@ public final class WalIdleTimeoutWatcher {
     private final long timeoutSeconds;
     private final EngineShutdownCoordinator coordinator;
     private final ScheduledExecutorService scheduler;
-    private final AtomicLong lastCdcEventAtMs;
+    private final AtomicLong lastWalDataAtMs = new AtomicLong(0);
+    private final AtomicBoolean idleShutdownEnabled = new AtomicBoolean(true);
     private ScheduledFuture<?> checkTask;
 
     public WalIdleTimeoutWatcher(long timeoutSeconds, EngineShutdownCoordinator coordinator) {
@@ -30,7 +37,6 @@ public final class WalIdleTimeoutWatcher {
             thread.setDaemon(true);
             return thread;
         });
-        this.lastCdcEventAtMs = new AtomicLong(System.currentTimeMillis());
     }
 
     public static WalIdleTimeoutWatcher createOptional(String timeoutProperty, EngineShutdownCoordinator coordinator) {
@@ -54,19 +60,54 @@ public final class WalIdleTimeoutWatcher {
     }
 
     public void start() {
+        lastWalDataAtMs.set(System.currentTimeMillis());
         log.info("WAL idle timeout enabled: {} seconds", timeoutSeconds);
         checkTask = scheduler.scheduleAtFixedRate(
                 this::checkIdle, CHECK_INTERVAL_SECONDS, CHECK_INTERVAL_SECONDS, TimeUnit.SECONDS);
     }
 
-    public void resetOnCdcEvent() {
-        lastCdcEventAtMs.set(System.currentTimeMillis());
+    /**
+     * High-water-mark runs keep reading through the initial WAL scan. Idle expiry cannot stop
+     * the process until {@link #markPastHighWaterMark()} runs.
+     */
+    public void deferIdleShutdownUntilPastHighWaterMark() {
+        idleShutdownEnabled.set(false);
+        log.info("Idle timeout will not shut down until the high water mark is passed");
+    }
+
+    /**
+     * The walsender has read every flushed WAL record and is waiting. The countdown that started
+     * with the watcher can now stop the process; this does not reset that clock.
+     */
+    public void allowIdleShutdown() {
+        if (idleShutdownEnabled.compareAndSet(false, true)) {
+            log.info("Walsender is caught up; idle timeout can shut down");
+        }
+    }
+
+    public void onWalDataRead() {
+        lastWalDataAtMs.set(System.currentTimeMillis());
+    }
+
+    /**
+     * The slot has reached the batch-end LSN. Further WAL data shuts the engine down immediately;
+     * this countdown shuts it down when no further data arrives.
+     */
+    public void markPastHighWaterMark() {
+        lastWalDataAtMs.set(System.currentTimeMillis());
+        idleShutdownEnabled.set(true);
+        log.info(
+                "Passed high water mark; shutting down on further WAL data or after {} seconds with no further data",
+                timeoutSeconds);
     }
 
     private void checkIdle() {
-        long elapsedMs = System.currentTimeMillis() - lastCdcEventAtMs.get();
+        if (!idleShutdownEnabled.get()) {
+            return;
+        }
+        long elapsedMs = System.currentTimeMillis() - lastWalDataAtMs.get();
         if (elapsedMs >= TimeUnit.SECONDS.toMillis(timeoutSeconds)) {
-            log.info("No CDC record received for {} seconds; shutting down", timeoutSeconds);
+            log.info("No WAL data for {} seconds; shutting down", timeoutSeconds);
             cancel();
             coordinator.shutdown();
         }

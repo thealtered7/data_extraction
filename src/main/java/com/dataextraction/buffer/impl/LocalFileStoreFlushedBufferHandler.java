@@ -4,11 +4,14 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermission;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.EnumSet;
 import java.util.Objects;
+import java.util.Set;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -25,6 +28,21 @@ public class LocalFileStoreFlushedBufferHandler implements FlushedBufferHandler 
      */
     private static final DateTimeFormatter FILE_TIMESTAMP =
             DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH-mm-ss.SSSSSSSSS'Z'").withZone(ZoneOffset.UTC);
+    /**
+     * Host processes and containers write the same tree as different users. {@code /opt/data} is
+     * already world-writable; directories created under it must be too, or the other user gets
+     * {@link java.nio.file.AccessDeniedException} on the next flush.
+     */
+    private static final Set<PosixFilePermission> SHARED_DIRECTORY = EnumSet.of(
+            PosixFilePermission.OWNER_READ,
+            PosixFilePermission.OWNER_WRITE,
+            PosixFilePermission.OWNER_EXECUTE,
+            PosixFilePermission.GROUP_READ,
+            PosixFilePermission.GROUP_WRITE,
+            PosixFilePermission.GROUP_EXECUTE,
+            PosixFilePermission.OTHERS_READ,
+            PosixFilePermission.OTHERS_WRITE,
+            PosixFilePermission.OTHERS_EXECUTE);
     private Path basePath;
     private String environment;
     private String fileExtension;
@@ -62,13 +80,35 @@ public class LocalFileStoreFlushedBufferHandler implements FlushedBufferHandler 
     private String writeFile(FileWriteFlushEvent event, InputStream readStream) throws IOException {
         Path eventPath = this.getEventPath(event);
         try {
-            Files.createDirectories(eventPath.getParent());
+            Path parent = eventPath.getParent();
+            Files.createDirectories(parent);
+            shareDirectory(parent);
             Files.write(eventPath, readStream.readAllBytes());
         } catch (IOException e) {
-            logger.error("Error handling flushed buffer: {}", e);
+            logger.error("Error handling flushed buffer {}", eventPath, e);
             throw e;
         }
         return eventPath.toString();
+    }
+
+    private void shareDirectory(Path directory) {
+        Path stop = basePath == null ? null : basePath.toAbsolutePath().normalize();
+        Path current = directory;
+        while (current != null) {
+            Path normalized = current.toAbsolutePath().normalize();
+            if (stop != null && !normalized.startsWith(stop)) {
+                break;
+            }
+            try {
+                Files.setPosixFilePermissions(normalized, SHARED_DIRECTORY);
+            } catch (IOException e) {
+                logger.warn("Could not make {} writable by other users: {}", normalized, e.toString());
+            }
+            if (stop != null && normalized.equals(stop)) {
+                break;
+            }
+            current = current.getParent();
+        }
     }
 
     private Path getEventPath(FileWriteFlushEvent event) {
